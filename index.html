@@ -1,206 +1,329 @@
-var ss = SpreadsheetApp.getActiveSpreadsheet();
-var sheet = ss.getSheetByName("Sheet1");
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stocks Dashboard (Real Charts)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+    <style>
+        :root { --bg-color: #0d0d0d; --card-bg: #161616; --text-main: #ffffff; --text-sub: #888888; --up-color: #00e676; --down-color: #ff1744; --border-radius: 8px; }
+        body { background-color: var(--bg-color); color: var(--text-main); font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }
+        
+        #loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 999; color: white; font-size: 20px; backdrop-filter: blur(5px); }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 0 5px; }
+        .title-group { display: flex; align-items: baseline; gap: 15px; }
+        h1 { margin: 0; font-size: 24px; font-weight: 500; }
+        .status-text { color: #444; font-size: 14px; }
+        .btn-group { display: flex; gap: 10px; }
+        button { background-color: #333; color: white; border: 1px solid #444; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
+        button.primary { background-color: #2979ff; border-color: #2979ff; }
+        button:hover { opacity: 0.9; }
+        
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 15px; }
+        
+        /* Sortable & Card Styles */
+        .sortable-ghost { opacity: 0.4; background-color: #333 !important; border: 1px dashed #666; }
+        .sortable-drag { cursor: grabbing; }
 
-function doGet(e) {
-  var action = e.parameter.action;
-  if (action == "read") return readData();
-  return ContentService.createTextOutput("Invalid Action");
-}
+        .stock-card { background-color: var(--card-bg); border-radius: var(--border-radius); padding: 15px; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #222; display: flex; flex-direction: column; }
+        .card-header { display: flex; justify-content: space-between; margin-bottom: 5px; cursor: grab; }
+        .card-header:active { cursor: grabbing; }
 
-function doPost(e) {
-  var action = e.parameter.action;
-  var data = JSON.parse(e.postData.contents);
-  
-  if (action == "updateNote") return updateNote(data);
-  if (action == "updateShares") return updateShares(data);
-  if (action == "addStock") return addStock(data);
-  if (action == "deleteStock") return deleteStock(data);
-  if (action == "reorderStocks") return reorderStocks(data);
-  
-  return ContentService.createTextOutput("Invalid Action");
-}
-
-function readData() {
-  var rows = sheet.getDataRange().getValues();
-  var data = [];
-  
-  for (var i = 1; i < rows.length; i++) {
-    if (rows[i][0] != "") {
-      var symbol = rows[i][0];
-      // 呼叫 Yahoo 抓取真實走勢
-      var yahooData = fetchYahooData(symbol);
-      
-      data.push({
-        symbol: symbol,
-        note: rows[i][1],
-        name: rows[i][2],
-        shares: rows[i][7] === "" ? "" : rows[i][7], // 股數
-        // 使用 Yahoo 的即時數據優先，如果失敗才用 Google Sheet 的數據
-        price: yahooData.price || rows[i][3],
-        prev: yahooData.prev || rows[i][4],
-        high: yahooData.high || rows[i][5],
-        low: yahooData.low || rows[i][6],
-        change: yahooData.change,
-        pct: yahooData.pct,
-        chartData: yahooData.chartData,   // ★ 真實走勢數據
-        chartLabels: yahooData.chartLabels, // ★ 真實時間軸
-        isError: yahooData.isError
-      });
-    }
-  }
-  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
-}
-
-// ★★★ 核心：抓取 Yahoo Finance 真實數據 ★★★
-function fetchYahooData(googleSymbol) {
-  // 1. 代碼轉換 (Google -> Yahoo)
-  // TPE:2330 -> 2330.TW, NVDA -> NVDA
-  var yahooSymbol = googleSymbol;
-  if (googleSymbol.startsWith("TPE:")) {
-    yahooSymbol = googleSymbol.replace("TPE:", "") + ".TW";
-  }
-
-  // 2. 設定 Yahoo API URL (抓取 1天範圍，5分鐘間隔)
-  var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + yahooSymbol + "?range=1d&interval=5m";
-  
-  try {
-    var response = UrlFetchApp.fetch(url, {muteHttpExceptions: true});
-    var json = JSON.parse(response.getContentText());
-    
-    if (!json.chart || !json.chart.result || json.chart.result.length === 0) {
-      return { isError: true };
-    }
-
-    var result = json.chart.result[0];
-    var meta = result.meta;
-    var quote = result.indicators.quote[0];
-    var timestamp = result.timestamp;
-
-    // 取得價格
-    var currentPrice = meta.regularMarketPrice;
-    var prevClose = meta.chartPreviousClose;
-    var change = currentPrice - prevClose;
-    var pct = (change / prevClose) * 100;
-
-    // 整理圖表數據 (過濾掉空值)
-    var chartData = [];
-    var chartLabels = [];
-    
-    if (timestamp && quote.close) {
-      for (var i = 0; i < timestamp.length; i++) {
-        // Yahoo 有時會有 null 值，需過濾
-        if (quote.close[i] != null) {
-          chartData.push(Number(quote.close[i].toFixed(2)));
-          
-          // 轉換時間戳記為 HH:mm
-          var date = new Date(timestamp[i] * 1000);
-          // 調整時區 (Yahoo 時間通常是 UTC，這裡簡單取本地時間格式)
-          // 注意：Apps Script 的時區設定很重要，通常預設是美東或 UTC
-          // 這裡我們只取時分，前端顯示時會比較簡單
-          var hours = date.getHours().toString().padStart(2, '0');
-          var minutes = date.getMinutes().toString().padStart(2, '0');
-          chartLabels.push(hours + ":" + minutes);
+        .symbol-info { display: flex; flex-direction: column; pointer-events: none; }
+        .symbol { font-size: 18px; font-weight: bold; color: #fff; }
+        .name { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
+        
+        .header-right { display: flex; flex-direction: column; align-items: flex-end; }
+        .prev-close { font-size: 12px; color: var(--text-sub); margin-bottom: 4px; pointer-events: none; }
+        
+        .shares-wrapper { font-size: 11px; color: #666; display: flex; align-items: center; gap: 4px; }
+        .shares-input { 
+            width: 50px; background: #222; border: 1px solid #333; color: #ddd; font-size: 11px; padding: 1px 4px; border-radius: 3px; text-align: right; 
         }
-      }
-    }
+        .shares-input:focus { border-color: #555; outline: none; background: #000; }
+        
+        .close-btn { position: absolute; top: -10px; right: -10px; color: #444; cursor: pointer; font-size: 16px; padding: 5px; z-index: 10; }
+        .close-btn:hover { color: #ff1744; }
+        
+        .price-section { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; margin-top: 5px; }
+        .current-price { font-size: 36px; font-weight: bold; line-height: 1; }
+        .price-change { text-align: right; font-size: 16px; font-weight: bold; }
+        .pct { font-size: 14px; }
+        
+        .meta-data { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-sub); font-family: 'Consolas', monospace; margin-bottom: 5px; }
+        .fut-label { background: #333; color: #fff; padding: 1px 3px; border-radius: 2px; font-size: 10px; margin-right: 4px; }
+        
+        .chart-container { position: relative; height: 120px; width: 100%; margin-bottom: 10px; }
+        
+        .note-section { border-top: 1px solid #2a2a2a; padding-top: 8px; margin-top: auto; }
+        
+        .note-input {
+            width: 100%; background: transparent; border: none; color: #ccc; font-size: 12px; font-family: 'Segoe UI', sans-serif; outline: none; padding: 4px 0; transition: 0.3s;
+            resize: none; height: 62px; line-height: 1.5; overflow-y: auto; word-wrap: break-word;
+        }
+        .note-input::placeholder { color: #444; font-style: italic; }
+        .note-input:focus { color: #fff; background: #222; padding-left: 5px; border-radius: 4px; }
+        .note-input::-webkit-scrollbar { width: 4px; }
+        .note-input::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+        
+        .text-up { color: var(--up-color); }
+        .text-down { color: var(--down-color); }
+    </style>
+</head>
+<body>
 
-    return {
-      price: currentPrice,
-      prev: prevClose,
-      high: meta.regularMarketDayHigh,
-      low: meta.regularMarketDayLow,
-      change: change,
-      pct: pct,
-      chartData: chartData,
-      chartLabels: chartLabels,
-      isError: false
-    };
+    <div id="loading">Connecting to Real-time Data...</div>
 
-  } catch (e) {
-    return { isError: true }; // 抓取失敗回傳錯誤標記
-  }
-}
+    <div class="header">
+        <div class="title-group">
+            <h1>Stocks Tracking</h1>
+            <span class="status-text" id="statusText">(Initializing...)</span>
+        </div>
+        <div class="btn-group">
+            <button onclick="fetchStockData()">&#8635; Refresh</button>
+            <button class="primary" onclick="addNewStock()">+ Add Stock</button>
+        </div>
+    </div>
 
-// 其他基本功能保持不變
-function updateNote(data) {
-  var rows = sheet.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    if (rows[i][0] == data.symbol) {
-      sheet.getRange(i + 1, 2).setValue(data.note);
-      return ContentService.createTextOutput("Success");
-    }
-  }
-  return ContentService.createTextOutput("Error");
-}
+    <div class="dashboard-grid" id="stockGrid"></div>
 
-function updateShares(data) {
-  var rows = sheet.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    if (rows[i][0] == data.symbol) {
-      sheet.getRange(i + 1, 8).setValue(data.shares);
-      return ContentService.createTextOutput("Success");
-    }
-  }
-  return ContentService.createTextOutput("Error");
-}
+    <script>
+        // ★★★ 請填入您的最新 API URL ★★★
+        const API_URL = "您的_GOOGLE_APPS_SCRIPT_URL";
 
-function addStock(data) {
-  var symbol = data.symbol.toString().toUpperCase().trim();
-  if (/^\d{4}$/.test(symbol)) symbol = "TPE:" + symbol;
-  
-  var rows = sheet.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    if (rows[i][0] == symbol) return ContentService.createTextOutput("Exists");
-  }
-  
-  var newRow = sheet.getLastRow() + 1;
-  writeRowFormula(newRow, symbol, "", ""); 
-  return ContentService.createTextOutput("Success");
-}
+        const grid = document.getElementById('stockGrid');
+        const loading = document.getElementById('loading');
+        const statusText = document.getElementById('statusText');
 
-function deleteStock(data) {
-  var rows = sheet.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    if (rows[i][0] == data.symbol) {
-      sheet.deleteRow(i + 1);
-      return ContentService.createTextOutput("Success");
-    }
-  }
-  return ContentService.createTextOutput("Error");
-}
+        window.onload = function() { 
+            fetchStockData(); 
+            initSortable();
 
-function reorderStocks(data) {
-  var newSymbols = data.symbols;
-  var rows = sheet.getDataRange().getValues();
-  var noteMap = {};
-  var shareMap = {}; 
+            // 每 60 秒自動更新一次
+            setInterval(fetchStockData, 60000);
+        };
 
-  for(var i=1; i<rows.length; i++) {
-     noteMap[rows[i][0]] = rows[i][1];
-     shareMap[rows[i][0]] = rows[i][7]; 
-  }
+        function initSortable() {
+            new Sortable(grid, {
+                animation: 150,
+                handle: '.card-header',
+                ghostClass: 'sortable-ghost',
+                delay: 100, delayOnTouchOnly: true,
+                onEnd: function (evt) { saveNewOrder(); }
+            });
+        }
 
-  var lastRow = sheet.getLastRow();
-  if(lastRow > 1) {
-    sheet.getRange(2, 1, lastRow-1, 8).clearContent();
-  }
+        async function saveNewOrder() {
+            statusText.innerText = "(Saving Order...)";
+            const cards = document.querySelectorAll('.stock-card');
+            const newOrder = Array.from(cards).map(card => card.getAttribute('data-symbol'));
+            try {
+                await fetch(API_URL + "?action=reorderStocks", {
+                    method: 'POST',
+                    body: JSON.stringify({ symbols: newOrder, action: "reorderStocks" })
+                });
+                statusText.innerText = "(Order Saved)";
+                setTimeout(() => { statusText.innerText = "(Synced)"; }, 2000);
+            } catch (e) {
+                console.error("Sort Error", e);
+                statusText.innerText = "(Save Failed)";
+            }
+        }
 
-  for(var j=0; j<newSymbols.length; j++) {
-    var sym = newSymbols[j];
-    var note = noteMap[sym] || "";
-    var share = shareMap[sym] || "";
-    writeRowFormula(j + 2, sym, note, share);
-  }
-  return ContentService.createTextOutput("Success");
-}
+        async function fetchStockData() {
+            // 注意：自動更新時不要顯示全螢幕 loading，只更新文字，以免打擾使用者
+            if(document.getElementById('stockGrid').childElementCount === 0) {
+                loading.style.display = 'flex';
+            } else {
+                statusText.innerText = "(Updating Real-time Data...)";
+            }
+            
+            if(API_URL.includes("您的_GOOGLE_APPS_SCRIPT_URL")) {
+                alert("錯誤：請先在 HTML 程式碼中填入正確的 Script URL");
+                loading.style.display = 'none';
+                return;
+            }
 
-function writeRowFormula(rowIdx, symbol, note, share) {
-  sheet.getRange(rowIdx, 1).setValue(symbol);
-  sheet.getRange(rowIdx, 2).setValue(note);
-  sheet.getRange(rowIdx, 3).setFormula('=IFERROR(GOOGLEFINANCE(A' + rowIdx + ', "name"), "N/A")');
-  sheet.getRange(rowIdx, 4).setFormula('=IFERROR(GOOGLEFINANCE(A' + rowIdx + ', "price"), 0)');
-  sheet.getRange(rowIdx, 5).setFormula('=IFERROR(GOOGLEFINANCE(A' + rowIdx + ', "closeyest"), 0)');
-  sheet.getRange(rowIdx, 6).setFormula('=IFERROR(GOOGLEFINANCE(A' + rowIdx + ', "high"), 0)');
-  sheet.getRange(rowIdx, 7).setFormula('=IFERROR(GOOGLEFINANCE(A' + rowIdx + ', "low"), 0)');
-  sheet.getRange(rowIdx, 8).setValue(share); 
-}
+            try {
+                const response = await fetch(API_URL + "?action=read");
+                if (!response.ok) throw new Error("Network response was not ok");
+                
+                const cloudData = await response.json();
+                
+                grid.innerHTML = '';
+                if(cloudData.length === 0) {
+                    grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
+                }
+
+                cloudData.forEach((item, index) => {
+                    renderCard(item, index);
+                });
+                statusText.innerText = "(Synced: " + new Date().toLocaleTimeString() + ")";
+
+            } catch (error) {
+                console.error("Fetch Error:", error);
+                // 靜默失敗，不要每次都彈跳視窗，只更新狀態文字
+                statusText.innerText = "(Connection Failed)";
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        async function saveNote(symbol, newNote) {
+            try {
+                await fetch(API_URL + "?action=updateNote", {
+                    method: 'POST',
+                    body: JSON.stringify({ symbol: symbol, note: newNote, action: "updateNote" })
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function saveShares(symbol, newShares) {
+            try {
+                await fetch(API_URL + "?action=updateShares", {
+                    method: 'POST',
+                    body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" })
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function addNewStock() {
+            const symbol = prompt("輸入股票代碼 (例如 2330 或 NVDA)：");
+            if (symbol) {
+                loading.style.display = 'flex';
+                statusText.innerText = "(Adding...)";
+                try {
+                    const res = await fetch(API_URL + "?action=addStock", {
+                        method: 'POST',
+                        body: JSON.stringify({ symbol: symbol.toUpperCase().trim(), action: "addStock" })
+                    });
+                    const result = await res.text();
+                    
+                    if(result === "Exists") alert("已在清單中");
+                    else setTimeout(fetchStockData, 1500);
+                } catch (e) { alert("新增失敗"); }
+                loading.style.display = 'none';
+            }
+        }
+
+        async function deleteStock(symbol) {
+            if(confirm(`刪除 ${symbol} ?`)) {
+                loading.style.display = 'flex';
+                try {
+                    await fetch(API_URL + "?action=deleteStock", {
+                        method: 'POST',
+                        body: JSON.stringify({ symbol: symbol, action: "deleteStock" })
+                    });
+                    fetchStockData();
+                } catch (e) { alert("刪除失敗"); loading.style.display = 'none'; }
+            }
+        }
+
+        function renderCard(stock, index) {
+            const colorClass = (stock.change >= 0) ? 'text-up' : 'text-down';
+            const sign = (stock.change >= 0) ? '+' : '';
+            const priceVal = stock.isError ? "Loading..." : Number(stock.price).toFixed(2);
+            const changeVal = stock.isError ? "-" : Number(stock.change).toFixed(2);
+            const pctVal = stock.isError ? "-" : Number(stock.pct).toFixed(2);
+            const displaySymbol = stock.symbol.replace('TPE:', '');
+
+            const cardHTML = `
+                <div class="stock-card" data-symbol="${stock.symbol}">
+                    <span class="close-btn" onclick="deleteStock('${stock.symbol}')">&times;</span>
+                    <div class="card-header">
+                        <div class="symbol-info">
+                            <span class="symbol">${displaySymbol}</span>
+                            <span class="name">${stock.name || 'Stock'}</span>
+                        </div>
+                        <div class="header-right">
+                            <div class="prev-close">Prev: ${Number(stock.prev).toFixed(2)}</div>
+                            <div class="shares-wrapper">
+                                <input type="number" class="shares-input" placeholder="0" 
+                                       value="${stock.shares || ''}" 
+                                       onblur="saveShares('${stock.symbol}', this.value)">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="price-section">
+                        <div class="current-price ${colorClass}">${stock.isError ? '' : '$'}${priceVal}</div>
+                        <div class="price-change ${colorClass}">
+                            <div>${sign}${changeVal}</div>
+                            <div class="pct">${sign}${pctVal}%</div>
+                        </div>
+                    </div>
+
+                    <div class="meta-data">
+                        <div><span class="fut-label">FUT</span> Real-time</div>
+                        <div>L:${Number(stock.low).toFixed(2)} H:${Number(stock.high).toFixed(2)}</div>
+                    </div>
+
+                    <div class="chart-container">
+                        <canvas id="chart-${index}"></canvas>
+                    </div>
+
+                    <div class="note-section">
+                        <textarea class="note-input" 
+                               placeholder="筆記..." 
+                               onblur="saveNote('${stock.symbol}', this.value)">${stock.note}</textarea>
+                    </div>
+                </div>
+            `;
+            
+            const div = document.createElement('div');
+            div.innerHTML = cardHTML;
+            grid.appendChild(div.firstElementChild);
+
+            // ★★★ 繪製真實圖表 ★★★
+            const ctx = document.getElementById(`chart-${index}`).getContext('2d');
+            const lineColor = (stock.change >= 0) ? '#00e676' : '#ff1744';
+            const gradient = ctx.createLinearGradient(0, 0, 0, 120);
+            gradient.addColorStop(0, (stock.change >= 0) ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 23, 68, 0.15)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+            // 如果有真實圖表數據則使用，否則顯示空圖
+            const chartData = stock.chartData || [];
+            const chartLabels = stock.chartLabels || [];
+            const prevPrice = Number(stock.prev);
+            
+            // 昨收線數據 (填滿整個長度)
+            const prevLineData = new Array(chartLabels.length).fill(prevPrice);
+
+            // 計算 Y 軸範圍
+            const allValues = [...chartData, prevPrice];
+            const minPrice = Math.min(...allValues) * 0.995;
+            const maxPrice = Math.max(...allValues) * 1.005;
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartLabels,
+                    datasets: [
+                        { data: chartData, borderColor: lineColor, backgroundColor: gradient, borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.2 }, // 真實走勢通常不需要太平滑，tension設小一點
+                        { data: prevLineData, borderColor: '#666', borderWidth: 1, borderDash: [5, 3], pointRadius: 0, fill: false }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+                    scales: {
+                        x: { 
+                            display: true, 
+                            grid: { color: '#222', drawBorder: false }, 
+                            ticks: { display: true, color: '#555', font: { size: 10 }, maxTicksLimit: 6 } 
+                        },
+                        y: { 
+                            display: true, position: 'right', min: minPrice, max: maxPrice, 
+                            grid: { color: '#2a2a2a', borderDash: [2, 2] }, 
+                            ticks: { color: '#666', font: { size: 10 }, callback: function(v){return Number(v).toFixed(1);} } 
+                        }
+                    },
+                    interaction: { mode: 'nearest', axis: 'x', intersect: false }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
