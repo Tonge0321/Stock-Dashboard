@@ -128,6 +128,11 @@
         window.onload = function() { 
             fetchStockData(); 
             initSortable();
+
+            // ★★★ 新增：設定每 60 秒 (60000 毫秒) 自動刷新一次 ★★★
+            setInterval(function() {
+                fetchStockData();
+            }, 60000); 
         };
 
         function initSortable() {
@@ -354,3 +359,4 @@
     </script>
 </body>
 </html>
+
