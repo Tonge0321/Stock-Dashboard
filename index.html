@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (5 Min Interval)</title>
+    <title>Stocks Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -28,18 +28,35 @@
         .sortable-drag { cursor: grabbing; }
 
         .stock-card { background-color: var(--card-bg); border-radius: var(--border-radius); padding: 15px; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #222; display: flex; flex-direction: column; }
-        .card-header { display: flex; justify-content: space-between; margin-bottom: 10px; cursor: grab; }
+        .card-header { display: flex; justify-content: space-between; margin-bottom: 5px; cursor: grab; }
         .card-header:active { cursor: grabbing; }
 
         .symbol-info { display: flex; flex-direction: column; pointer-events: none; }
         .symbol { font-size: 18px; font-weight: bold; color: #fff; }
         .name { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
-        .prev-close { font-size: 12px; color: var(--text-sub); text-align: right; position: relative; pointer-events: none; }
+        
+        /* Header 右側佈局 */
+        .header-right { display: flex; flex-direction: column; align-items: flex-end; }
+        .prev-close { font-size: 12px; color: var(--text-sub); margin-bottom: 4px; pointer-events: none; }
+        
+        /* 股數輸入框樣式 (已移除 Hold 文字) */
+        .shares-wrapper { font-size: 11px; color: #666; display: flex; align-items: center; gap: 4px; }
+        .shares-input { 
+            width: 50px; 
+            background: #222; 
+            border: 1px solid #333; 
+            color: #ddd; 
+            font-size: 11px; 
+            padding: 1px 4px; 
+            border-radius: 3px; 
+            text-align: right; 
+        }
+        .shares-input:focus { border-color: #555; outline: none; background: #000; }
         
         .close-btn { position: absolute; top: -10px; right: -10px; color: #444; cursor: pointer; font-size: 16px; padding: 5px; z-index: 10; }
         .close-btn:hover { color: #ff1744; }
         
-        .price-section { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; }
+        .price-section { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px; margin-top: 5px; }
         .current-price { font-size: 36px; font-weight: bold; line-height: 1; }
         .price-change { text-align: right; font-size: 16px; font-weight: bold; }
         .pct { font-size: 14px; }
@@ -51,9 +68,12 @@
         
         .note-section { border-top: 1px solid #2a2a2a; padding-top: 8px; margin-top: auto; }
         
+        /* 筆記欄位高度維持三行 */
         .note-input {
             width: 100%; background: transparent; border: none; color: #ccc; font-size: 12px; font-family: 'Segoe UI', sans-serif; outline: none; padding: 4px 0; transition: 0.3s;
-            resize: none; height: 42px; line-height: 1.5; overflow-y: auto; word-wrap: break-word;
+            resize: none; 
+            height: 62px; 
+            line-height: 1.5; overflow-y: auto; word-wrap: break-word;
         }
         .note-input::placeholder { color: #444; font-style: italic; }
         .note-input:focus { color: #fff; background: #222; padding-left: 5px; border-radius: 4px; }
@@ -82,14 +102,14 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // ★★★ 已填入您的 API 網址 ★★★
+        // ★★★ 您提供的 API URL ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
         const loading = document.getElementById('loading');
         const statusText = document.getElementById('statusText');
 
-        // ★★★ 生成 5 分鐘間隔的時間軸 ★★★
+        // 生成每5分鐘的時間標籤
         function generateTimeLabels() {
             const labels = [];
             let hour = 9, minute = 30;
@@ -98,14 +118,11 @@
                 const hStr = hour.toString().padStart(2, '0');
                 const mStr = minute.toString().padStart(2, '0');
                 labels.push(`${hStr}:${mStr}`);
-                
-                minute += 5; // 每 5 分鐘增加一次
-                
+                minute += 5; 
                 if (minute >= 60) { hour++; minute = 0; }
             }
             return labels;
         }
-
         const CHART_LABELS = generateTimeLabels();
 
         window.onload = function() { 
@@ -127,7 +144,6 @@
             statusText.innerText = "(Saving Order...)";
             const cards = document.querySelectorAll('.stock-card');
             const newOrder = Array.from(cards).map(card => card.getAttribute('data-symbol'));
-            
             try {
                 await fetch(API_URL + "?action=reorderStocks", {
                     method: 'POST',
@@ -164,7 +180,7 @@
 
             } catch (error) {
                 console.error("Fetch Error:", error);
-                alert("連線失敗！\n1. 請確認 Apps Script 已部署為「任何人」。\n2. 網址已更新，若仍有問題請檢查網路。");
+                alert("連線失敗！請確認後端 Script 已更新並重新部署。");
                 statusText.innerText = "(Connection Failed)";
             } finally {
                 loading.style.display = 'none';
@@ -184,7 +200,6 @@
             const totalPoints = CHART_LABELS.length;
             
             for(let i=0; i < totalPoints - 1; i++) {
-                // 5分鐘一個點，波動係數設為 0.005，讓線條不會太鋸齒
                 tempPrice = tempPrice * (1 + (Math.random() - 0.5) * 0.005); 
                 chartData.push(tempPrice);
             }
@@ -203,6 +218,16 @@
                 await fetch(API_URL + "?action=updateNote", {
                     method: 'POST',
                     body: JSON.stringify({ symbol: symbol, note: newNote, action: "updateNote" })
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function saveShares(symbol, newShares) {
+            console.log("Saving shares:", symbol, newShares);
+            try {
+                await fetch(API_URL + "?action=updateShares", {
+                    method: 'POST',
+                    body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" })
                 });
             } catch (e) { console.error(e); }
         }
@@ -255,7 +280,14 @@
                             <span class="symbol">${displaySymbol}</span>
                             <span class="name">${stock.name || 'Stock'}</span>
                         </div>
-                        <div class="prev-close">Prev: ${Number(stock.prev).toFixed(2)}</div>
+                        <div class="header-right">
+                            <div class="prev-close">Prev: ${Number(stock.prev).toFixed(2)}</div>
+                            <div class="shares-wrapper">
+                                <input type="number" class="shares-input" placeholder="0" 
+                                       value="${stock.shares || ''}" 
+                                       onblur="saveShares('${stock.symbol}', this.value)">
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="price-section">
@@ -312,17 +344,8 @@
                     responsive: true, maintainAspectRatio: false, animation: false,
                     plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
                     scales: {
-                        x: { 
-                            display: true, 
-                            grid: { color: '#222', drawBorder: false }, 
-                            // 限制最大顯示 7 個時間標籤，避免 X 軸文字擠在一起
-                            ticks: { display: true, color: '#555', font: { size: 10 }, maxTicksLimit: 7 } 
-                        },
-                        y: { 
-                            display: true, position: 'right', min: minPrice, max: maxPrice, 
-                            grid: { color: '#2a2a2a', borderDash: [2, 2] }, 
-                            ticks: { color: '#666', font: { size: 10 }, callback: function(v){return Number(v).toFixed(1);} } 
-                        }
+                        x: { display: true, grid: { color: '#222', drawBorder: false }, ticks: { display: true, color: '#555', font: { size: 10 }, maxTicksLimit: 7 } },
+                        y: { display: true, position: 'right', min: minPrice, max: maxPrice, grid: { color: '#2a2a2a', borderDash: [2, 2] }, ticks: { color: '#666', font: { size: 10 }, callback: function(v){return Number(v).toFixed(1);} } }
                     },
                     interaction: { mode: 'nearest', axis: 'x', intersect: false }
                 }
