@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Auto-Fallback)</title>
+    <title>Stocks Dashboard (Proxy Fix)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -89,14 +89,14 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // 您提供的 API URL
+        // ★★★ 請填入您的 Google Apps Script URL ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
         const loading = document.getElementById('loading');
         const statusText = document.getElementById('statusText');
 
-        // ★★★ 模擬時間軸 (備用) ★★★
+        // 生成備用時間軸
         function generateMockLabels() {
             const labels = [];
             let hour = 9, minute = 30;
@@ -115,7 +115,7 @@
         window.onload = function() { 
             fetchStockData(); 
             initSortable();
-            setInterval(fetchStockData, 60000); // 60秒自動刷新
+            setInterval(fetchStockData, 60000); 
         };
 
         function initSortable() {
@@ -139,11 +139,13 @@
             } catch (e) { console.error(e); statusText.innerText = "(Save Failed)"; }
         }
 
+        // ★★★ 主流程：讀取 Sheet 資料 -> 前端 Proxy 抓圖表 -> 合併顯示 ★★★
         async function fetchStockData() {
             if(grid.childElementCount === 0) loading.style.display = 'flex';
             else statusText.innerText = "(Updating...)";
             
             try {
+                // 1. 先拿 Google Sheet 資料 (價格/筆記/股數)
                 const response = await fetch(API_URL + "?action=read");
                 const cloudData = await response.json();
                 
@@ -152,11 +154,31 @@
                     grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
-                cloudData.forEach((item, index) => {
-                    // ★ 關鍵修正：檢查是否有圖，沒有則生成模擬圖 ★
-                    const finalStock = ensureChartData(item);
-                    renderCard(finalStock, index);
+                // 2. 逐一處理並渲染
+                // 這裡使用 Promise.all 並行處理所有股票的圖表請求，速度會快很多
+                const renderPromises = cloudData.map(async (item) => {
+                    // 嘗試從前端抓取 Yahoo 真實圖表
+                    const chartData = await fetchYahooChartFrontend(item.symbol);
+                    
+                    // 合併資料
+                    if (chartData.success) {
+                        item.chartData = chartData.data;
+                        item.chartLabels = chartData.labels;
+                        item.isSimulated = false;
+                    } else {
+                        // 失敗則使用模擬
+                        item = addMockChartData(item);
+                    }
+                    return item;
                 });
+
+                const finalStocks = await Promise.all(renderPromises);
+
+                // 渲染卡片
+                finalStocks.forEach((item, index) => {
+                    renderCard(item, index);
+                });
+
                 statusText.innerText = "(Synced: " + new Date().toLocaleTimeString() + ")";
 
             } catch (error) {
@@ -167,15 +189,49 @@
             }
         }
 
-        // ★★★ 核心功能：確保一定有圖表 (混合模式) ★★★
-        function ensureChartData(stock) {
-            // 情況A: 後端成功抓到 Yahoo 真實數據 -> 直接回傳
-            if (stock.chartData && stock.chartData.length > 0) {
-                return stock; 
-            }
+        // ★★★ 新增：透過 CORS Proxy 從前端抓取 Yahoo 數據 ★★★
+        async function fetchYahooChartFrontend(symbol) {
+            let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
+            
+            // 使用 corsproxy.io 繞過 CORS 限制
+            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m`;
 
-            // 情況B: 抓不到 (Yahoo擋擋) -> 啟動備用計畫 (生成模擬數據)
-            // 這樣圖表就不會是空的，但價格還是準的 (來自 Google Sheet)
+            try {
+                const res = await fetch(url);
+                const json = await res.json();
+                
+                if (!json.chart || !json.chart.result || json.chart.result.length === 0) return { success: false };
+
+                const result = json.chart.result[0];
+                const timestamp = result.timestamp;
+                const quote = result.indicators.quote[0];
+
+                if (!timestamp || !quote.close) return { success: false };
+
+                const data = [];
+                const labels = [];
+
+                for (let i = 0; i < timestamp.length; i++) {
+                    if (quote.close[i] != null) {
+                        data.push(Number(quote.close[i].toFixed(2)));
+                        
+                        // 時間轉換
+                        const date = new Date(timestamp[i] * 1000);
+                        const h = date.getHours().toString().padStart(2, '0');
+                        const m = date.getMinutes().toString().padStart(2, '0');
+                        labels.push(`${h}:${m}`);
+                    }
+                }
+                return { success: true, data: data, labels: labels };
+
+            } catch (e) {
+                console.warn("Proxy Fetch Failed for", symbol);
+                return { success: false };
+            }
+        }
+
+        // 模擬數據備案
+        function addMockChartData(stock) {
             let price = parseFloat(stock.price);
             let prev = parseFloat(stock.prev);
             
@@ -184,18 +240,17 @@
 
             let mockData = [];
             let tempPrice = prev; 
-            // 產生跟 MOCK_LABELS 一樣長度的數據
             for(let i=0; i < MOCK_LABELS.length - 1; i++) {
                 tempPrice = tempPrice * (1 + (Math.random() - 0.5) * 0.005); 
                 mockData.push(tempPrice);
             }
-            mockData.push(price); // 終點修正為現價
+            mockData.push(price);
 
             return {
                 ...stock,
-                chartData: mockData,      // 填入模擬數據
-                chartLabels: MOCK_LABELS, // 填入模擬時間軸
-                isSimulated: true         // 標記一下 (可選)
+                chartData: mockData,
+                chartLabels: MOCK_LABELS,
+                isSimulated: true
             };
         }
 
@@ -236,8 +291,6 @@
             const changeVal = Number(stock.change).toFixed(2);
             const pctVal = Number(stock.pct).toFixed(2);
             const displaySymbol = stock.symbol.replace('TPE:', '');
-
-            // 如果是模擬圖，顯示一下標記 (可選)
             const sourceLabel = stock.isSimulated ? "Simulated" : "Real-time";
 
             const cardHTML = `
@@ -289,7 +342,6 @@
             gradient.addColorStop(0, (stock.change >= 0) ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 23, 68, 0.15)');
             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
-            // 繪圖數據
             const chartData = stock.chartData || [];
             const chartLabels = stock.chartLabels || [];
             const prevPrice = Number(stock.prev);
