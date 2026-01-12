@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Proxy Fix)</title>
+    <title>Stocks Dashboard (NY Time)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -89,14 +89,14 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // ★★★ 請填入您的 Google Apps Script URL ★★★
+        // ★★★ 您的 API URL ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
         const loading = document.getElementById('loading');
         const statusText = document.getElementById('statusText');
 
-        // 生成備用時間軸
+        // 生成備用時間軸 (美股時段)
         function generateMockLabels() {
             const labels = [];
             let hour = 9, minute = 30;
@@ -139,13 +139,11 @@
             } catch (e) { console.error(e); statusText.innerText = "(Save Failed)"; }
         }
 
-        // ★★★ 主流程：讀取 Sheet 資料 -> 前端 Proxy 抓圖表 -> 合併顯示 ★★★
         async function fetchStockData() {
             if(grid.childElementCount === 0) loading.style.display = 'flex';
             else statusText.innerText = "(Updating...)";
             
             try {
-                // 1. 先拿 Google Sheet 資料 (價格/筆記/股數)
                 const response = await fetch(API_URL + "?action=read");
                 const cloudData = await response.json();
                 
@@ -154,19 +152,13 @@
                     grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
-                // 2. 逐一處理並渲染
-                // 這裡使用 Promise.all 並行處理所有股票的圖表請求，速度會快很多
                 const renderPromises = cloudData.map(async (item) => {
-                    // 嘗試從前端抓取 Yahoo 真實圖表
                     const chartData = await fetchYahooChartFrontend(item.symbol);
-                    
-                    // 合併資料
                     if (chartData.success) {
                         item.chartData = chartData.data;
                         item.chartLabels = chartData.labels;
                         item.isSimulated = false;
                     } else {
-                        // 失敗則使用模擬
                         item = addMockChartData(item);
                     }
                     return item;
@@ -174,7 +166,6 @@
 
                 const finalStocks = await Promise.all(renderPromises);
 
-                // 渲染卡片
                 finalStocks.forEach((item, index) => {
                     renderCard(item, index);
                 });
@@ -189,7 +180,6 @@
             }
         }
 
-        // ★★★ 新增：透過 CORS Proxy 從前端抓取 Yahoo 數據 ★★★
         async function fetchYahooChartFrontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
             
@@ -215,11 +205,15 @@
                     if (quote.close[i] != null) {
                         data.push(Number(quote.close[i].toFixed(2)));
                         
-                        // 時間轉換
+                        // ★★★ 修改重點：轉換為紐約時間 (America/New_York) ★★★
                         const date = new Date(timestamp[i] * 1000);
-                        const h = date.getHours().toString().padStart(2, '0');
-                        const m = date.getMinutes().toString().padStart(2, '0');
-                        labels.push(`${h}:${m}`);
+                        const nyTime = date.toLocaleTimeString('en-US', {
+                            timeZone: 'America/New_York',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false
+                        });
+                        labels.push(nyTime);
                     }
                 }
                 return { success: true, data: data, labels: labels };
@@ -230,7 +224,6 @@
             }
         }
 
-        // 模擬數據備案
         function addMockChartData(stock) {
             let price = parseFloat(stock.price);
             let prev = parseFloat(stock.prev);
@@ -347,7 +340,6 @@
             const prevPrice = Number(stock.prev);
             const prevLineData = new Array(chartLabels.length).fill(prevPrice);
 
-            // 計算 Y 軸範圍
             const allValues = [...chartData, prevPrice];
             const minPrice = Math.min(...allValues) * 0.995;
             const maxPrice = Math.max(...allValues) * 1.005;
