@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (NY Time)</title>
+    <title>Stocks Dashboard (With MA50)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -53,6 +53,8 @@
         
         .meta-data { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-sub); font-family: 'Consolas', monospace; margin-bottom: 5px; }
         .fut-label { background: #333; color: #fff; padding: 1px 3px; border-radius: 2px; font-size: 10px; margin-right: 4px; }
+        /* 新增 MA50 標籤樣式 */
+        .ma50-label { background: #333; color: #FFD700; padding: 1px 3px; border-radius: 2px; font-size: 10px; margin-right: 4px; border: 1px solid #554400; }
         
         .chart-container { position: relative; height: 120px; width: 100%; margin-bottom: 10px; }
         
@@ -89,14 +91,13 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // ★★★ 您的 API URL ★★★
+        // ★★★ 請填入您的 API URL ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
         const loading = document.getElementById('loading');
         const statusText = document.getElementById('statusText');
 
-        // 生成備用時間軸 (美股時段)
         function generateMockLabels() {
             const labels = [];
             let hour = 9, minute = 30;
@@ -152,15 +153,32 @@
                     grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
+                // 並行處理：抓取走勢圖 + 抓取 MA50
                 const renderPromises = cloudData.map(async (item) => {
-                    const chartData = await fetchYahooChartFrontend(item.symbol);
+                    // 1. 抓取走勢圖
+                    const chartDataPromise = fetchYahooChartFrontend(item.symbol);
+                    // 2. 抓取 MA50 數據
+                    const ma50Promise = fetchMA50Frontend(item.symbol);
+
+                    // 等待兩個請求都完成
+                    const [chartData, ma50Val] = await Promise.all([chartDataPromise, ma50Promise]);
+                    
+                    // 處理圖表數據
                     if (chartData.success) {
+                        item.price = chartData.price;
+                        item.prev = chartData.prev;
+                        item.change = item.price - item.prev;
+                        item.pct = (item.change / item.prev) * 100;
                         item.chartData = chartData.data;
                         item.chartLabels = chartData.labels;
                         item.isSimulated = false;
                     } else {
                         item = addMockChartData(item);
                     }
+
+                    // 處理 MA50
+                    item.ma50 = ma50Val;
+
                     return item;
                 });
 
@@ -180,19 +198,18 @@
             }
         }
 
+        // 抓取真實走勢
         async function fetchYahooChartFrontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            
-            // 使用 corsproxy.io 繞過 CORS 限制
             const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m`;
 
             try {
                 const res = await fetch(url);
                 const json = await res.json();
-                
                 if (!json.chart || !json.chart.result || json.chart.result.length === 0) return { success: false };
 
                 const result = json.chart.result[0];
+                const meta = result.meta;
                 const timestamp = result.timestamp;
                 const quote = result.indicators.quote[0];
 
@@ -200,27 +217,54 @@
 
                 const data = [];
                 const labels = [];
-
                 for (let i = 0; i < timestamp.length; i++) {
                     if (quote.close[i] != null) {
                         data.push(Number(quote.close[i].toFixed(2)));
-                        
-                        // ★★★ 修改重點：轉換為紐約時間 (America/New_York) ★★★
                         const date = new Date(timestamp[i] * 1000);
-                        const nyTime = date.toLocaleTimeString('en-US', {
-                            timeZone: 'America/New_York',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            hour12: false
-                        });
+                        const nyTime = date.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
                         labels.push(nyTime);
                     }
                 }
-                return { success: true, data: data, labels: labels };
+                return { 
+                    success: true, data: data, labels: labels,
+                    price: meta.regularMarketPrice, prev: meta.chartPreviousClose
+                };
+            } catch (e) { return { success: false }; }
+        }
+
+        // ★★★ 新增：抓取 MA50 歷史數據 ★★★
+        async function fetchMA50Frontend(symbol) {
+            let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
+            // 抓取 3個月的日線資料
+            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d`;
+
+            try {
+                const res = await fetch(url);
+                const json = await res.json();
+                
+                if (!json.chart || !json.chart.result) return null;
+                const quotes = json.chart.result[0].indicators.quote[0].close;
+                
+                if (!quotes || quotes.length < 50) return null; // 資料不足 50 天
+
+                // 取最後 50 天的收盤價計算平均
+                let sum = 0;
+                let count = 0;
+                // 從後面往前數 50 個有效數值
+                for (let i = quotes.length - 1; i >= 0; i--) {
+                    if (quotes[i] != null) {
+                        sum += quotes[i];
+                        count++;
+                        if (count === 50) break;
+                    }
+                }
+
+                if (count < 50) return null;
+                return (sum / 50).toFixed(2);
 
             } catch (e) {
-                console.warn("Proxy Fetch Failed for", symbol);
-                return { success: false };
+                console.warn("MA50 Fetch Failed", symbol);
+                return null;
             }
         }
 
@@ -241,9 +285,7 @@
 
             return {
                 ...stock,
-                chartData: mockData,
-                chartLabels: MOCK_LABELS,
-                isSimulated: true
+                chartData: mockData, chartLabels: MOCK_LABELS, isSimulated: true
             };
         }
 
@@ -285,6 +327,7 @@
             const pctVal = Number(stock.pct).toFixed(2);
             const displaySymbol = stock.symbol.replace('TPE:', '');
             const sourceLabel = stock.isSimulated ? "Simulated" : "Real-time";
+            const ma50Val = stock.ma50 ? `$${stock.ma50}` : "N/A";
 
             const cardHTML = `
                 <div class="stock-card" data-symbol="${stock.symbol}">
@@ -311,7 +354,7 @@
                     </div>
 
                     <div class="meta-data">
-                        <div><span class="fut-label">FUT</span> ${sourceLabel}</div>
+                        <div><span class="fut-label">FUT</span> ${sourceLabel} <span class="ma50-label">MA50: ${ma50Val}</span></div>
                         <div>L:${Number(stock.low).toFixed(2)} H:${Number(stock.high).toFixed(2)}</div>
                     </div>
 
@@ -339,8 +382,14 @@
             const chartLabels = stock.chartLabels || [];
             const prevPrice = Number(stock.prev);
             const prevLineData = new Array(chartLabels.length).fill(prevPrice);
+            
+            // ★★★ 新增：MA50 線數據 (整條水平線) ★★★
+            const ma50LineData = stock.ma50 ? new Array(chartLabels.length).fill(Number(stock.ma50)) : [];
 
+            // 計算 Y 軸範圍 (包含 MA50)
             const allValues = [...chartData, prevPrice];
+            if(stock.ma50) allValues.push(Number(stock.ma50));
+            
             const minPrice = Math.min(...allValues) * 0.995;
             const maxPrice = Math.max(...allValues) * 1.005;
 
@@ -349,8 +398,35 @@
                 data: {
                     labels: chartLabels,
                     datasets: [
-                        { data: chartData, borderColor: lineColor, backgroundColor: gradient, borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }, 
-                        { data: prevLineData, borderColor: '#666', borderWidth: 1, borderDash: [5, 3], pointRadius: 0, fill: false }
+                        { 
+                            label: 'Price',
+                            data: chartData, 
+                            borderColor: lineColor, 
+                            backgroundColor: gradient, 
+                            borderWidth: 1.5, 
+                            pointRadius: 0, 
+                            fill: true, 
+                            tension: 0.3 
+                        }, 
+                        { 
+                            label: 'Prev',
+                            data: prevLineData, 
+                            borderColor: '#666', 
+                            borderWidth: 1, 
+                            borderDash: [5, 3], 
+                            pointRadius: 0, 
+                            fill: false 
+                        },
+                        // ★★★ MA50 Dataset ★★★
+                        {
+                            label: 'MA50',
+                            data: ma50LineData,
+                            borderColor: '#FFD700', // 金黃色
+                            borderWidth: 1,
+                            borderDash: [2, 2], // 點狀虛線
+                            pointRadius: 0,
+                            fill: false
+                        }
                     ]
                 },
                 options: {
