@@ -3,11 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Color Fix)</title>
+    <title>Stocks Dashboard (US Style)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
-        :root { --bg-color: #0d0d0d; --card-bg: #161616; --text-main: #ffffff; --text-sub: #888888; --up-color: #00e676; --down-color: #ff1744; --border-radius: 8px; }
+        /* ★★★ 核心修改：美股風格 (綠漲紅跌) ★★★ */
+        :root { 
+            --bg-color: #0d0d0d; 
+            --card-bg: #161616; 
+            --text-main: #ffffff; 
+            --text-sub: #888888; 
+            --up-color: #00e676;   /* 改回綠色 (漲/獲利) */
+            --down-color: #ff1744; /* 改回紅色 (跌/虧損) */
+            --border-radius: 8px; 
+        }
         body { background-color: var(--bg-color); color: var(--text-main); font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }
         
         #loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 999; color: white; font-size: 20px; backdrop-filter: blur(5px); }
@@ -68,6 +77,7 @@
         .note-input::-webkit-scrollbar { width: 4px; }
         .note-input::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
         
+        /* 這裡會引用 root 定義的美股紅綠變數 */
         .text-up { color: var(--up-color); }
         .text-down { color: var(--down-color); }
     </style>
@@ -90,7 +100,7 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // ★★★ 請填入您的 API URL (確保是 /exec 結尾) ★★★
+        // ★★★ 請填入您的 API URL ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
@@ -144,7 +154,6 @@
             else statusText.innerText = "(Updating...)";
             
             try {
-                // 1. 取得基本清單
                 const response = await fetch(API_URL + "?action=read");
                 const cloudData = await response.json();
                 
@@ -153,14 +162,13 @@
                     grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
-                // 2. 並行抓取 Yahoo 真實數據
                 const renderPromises = cloudData.map(async (item) => {
                     const chartDataPromise = fetchYahooChartFrontend(item.symbol);
                     const ma50Promise = fetchMA50Frontend(item.symbol);
                     const [chartData, ma50Val] = await Promise.all([chartDataPromise, ma50Promise]);
                     
                     if (chartData.success) {
-                        item.price = chartData.price;
+                        item.price = chartData.price; 
                         item.prev = chartData.prev;
                         item.change = item.price - item.prev;
                         item.pct = (item.change / item.prev) * 100;
@@ -212,13 +220,16 @@
                     if (quote.close[i] != null) {
                         data.push(Number(quote.close[i].toFixed(2)));
                         const date = new Date(timestamp[i] * 1000);
-                        const nyTime = date.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false });
+                        const nyTime = date.toLocaleTimeString('en-US', {
+                            timeZone: 'America/New_York',
+                            hour: '2-digit', minute: '2-digit', hour12: false
+                        });
                         labels.push(nyTime);
                     }
                 }
                 return { 
                     success: true, data: data, labels: labels,
-                    price: meta.regularMarketPrice, prev: meta.chartPreviousClose
+                    price: meta.regularMarketPrice, prev: meta.chartPreviousClose 
                 };
             } catch (e) { return { success: false }; }
         }
@@ -306,13 +317,13 @@
             const sourceLabel = stock.isSimulated ? "Simulated" : "Real-time";
             const ma50Val = stock.ma50 ? `$${stock.ma50}` : "N/A";
 
-            // ★ 修正重點：成本顏色邏輯 ★
-            // 成本 > 現價 (Loss) -> 綠色 (#00e676)
-            // 成本 < 現價 (Profit) -> 紅色 (#ff1744)
+            // ★ 美股邏輯：獲利(Profit) = 綠色, 虧損(Loss) = 紅色 ★
             let costColor = '#ddd'; 
             if (stock.avgCost && stock.price) {
-                if (Number(stock.avgCost) > Number(stock.price)) costColor = '#00e676'; 
-                else if (Number(stock.avgCost) < Number(stock.price)) costColor = '#ff1744'; 
+                // 成本 < 現價 (Profit) -> 綠色 (#00e676)
+                if (Number(stock.avgCost) < Number(stock.price)) costColor = '#00e676'; 
+                // 成本 > 現價 (Loss) -> 紅色 (#ff1744)
+                else if (Number(stock.avgCost) > Number(stock.price)) costColor = '#ff1744'; 
             }
 
             const cardHTML = `
@@ -365,9 +376,15 @@
             grid.appendChild(div.firstElementChild);
 
             const ctx = document.getElementById(`chart-${index}`).getContext('2d');
+            // ★ 圖表顏色邏輯 (美股：綠漲紅跌) ★
             const lineColor = (stock.change >= 0) ? '#00e676' : '#ff1744';
+            
             const gradient = ctx.createLinearGradient(0, 0, 0, 120);
-            gradient.addColorStop(0, (stock.change >= 0) ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 23, 68, 0.15)');
+            if (stock.change >= 0) {
+                gradient.addColorStop(0, 'rgba(0, 230, 118, 0.15)'); // 綠色
+            } else {
+                gradient.addColorStop(0, 'rgba(255, 23, 68, 0.15)'); // 紅色
+            }
             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
             const chartData = stock.chartData || [];
