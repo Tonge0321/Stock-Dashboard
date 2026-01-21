@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (With MA50)</title>
+    <title>Stocks Dashboard (Cost Basis)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -37,7 +37,8 @@
         .header-right { display: flex; flex-direction: column; align-items: flex-end; }
         .prev-close { font-size: 12px; color: var(--text-sub); margin-bottom: 4px; pointer-events: none; }
         
-        .shares-wrapper { font-size: 11px; color: #666; display: flex; align-items: center; gap: 4px; }
+        /* 股數與成本輸入框 */
+        .shares-wrapper { font-size: 11px; color: #666; display: flex; align-items: center; gap: 4px; margin-top: 2px; }
         .shares-input { 
             width: 50px; background: #222; border: 1px solid #333; color: #ddd; font-size: 11px; padding: 1px 4px; border-radius: 3px; text-align: right; 
         }
@@ -53,7 +54,6 @@
         
         .meta-data { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-sub); font-family: 'Consolas', monospace; margin-bottom: 5px; }
         .fut-label { background: #333; color: #fff; padding: 1px 3px; border-radius: 2px; font-size: 10px; margin-right: 4px; }
-        /* 新增 MA50 標籤樣式 */
         .ma50-label { background: #333; color: #FFD700; padding: 1px 3px; border-radius: 2px; font-size: 10px; margin-right: 4px; border: 1px solid #554400; }
         
         .chart-container { position: relative; height: 120px; width: 100%; margin-bottom: 10px; }
@@ -153,17 +153,11 @@
                     grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
-                // 並行處理：抓取走勢圖 + 抓取 MA50
                 const renderPromises = cloudData.map(async (item) => {
-                    // 1. 抓取走勢圖
                     const chartDataPromise = fetchYahooChartFrontend(item.symbol);
-                    // 2. 抓取 MA50 數據
                     const ma50Promise = fetchMA50Frontend(item.symbol);
-
-                    // 等待兩個請求都完成
                     const [chartData, ma50Val] = await Promise.all([chartDataPromise, ma50Promise]);
                     
-                    // 處理圖表數據
                     if (chartData.success) {
                         item.price = chartData.price;
                         item.prev = chartData.prev;
@@ -175,10 +169,7 @@
                     } else {
                         item = addMockChartData(item);
                     }
-
-                    // 處理 MA50
                     item.ma50 = ma50Val;
-
                     return item;
                 });
 
@@ -198,7 +189,6 @@
             }
         }
 
-        // 抓取真實走勢
         async function fetchYahooChartFrontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
             const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m`;
@@ -232,40 +222,22 @@
             } catch (e) { return { success: false }; }
         }
 
-        // ★★★ 新增：抓取 MA50 歷史數據 ★★★
         async function fetchMA50Frontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            // 抓取 3個月的日線資料
             const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d`;
-
             try {
                 const res = await fetch(url);
                 const json = await res.json();
-                
                 if (!json.chart || !json.chart.result) return null;
                 const quotes = json.chart.result[0].indicators.quote[0].close;
-                
-                if (!quotes || quotes.length < 50) return null; // 資料不足 50 天
-
-                // 取最後 50 天的收盤價計算平均
-                let sum = 0;
-                let count = 0;
-                // 從後面往前數 50 個有效數值
+                if (!quotes || quotes.length < 50) return null;
+                let sum = 0, count = 0;
                 for (let i = quotes.length - 1; i >= 0; i--) {
-                    if (quotes[i] != null) {
-                        sum += quotes[i];
-                        count++;
-                        if (count === 50) break;
-                    }
+                    if (quotes[i] != null) { sum += quotes[i]; count++; if (count === 50) break; }
                 }
-
                 if (count < 50) return null;
                 return (sum / 50).toFixed(2);
-
-            } catch (e) {
-                console.warn("MA50 Fetch Failed", symbol);
-                return null;
-            }
+            } catch (e) { return null; }
         }
 
         function addMockChartData(stock) {
@@ -295,6 +267,11 @@
 
         async function saveShares(symbol, newShares) {
             try { await fetch(API_URL + "?action=updateShares", { method: 'POST', body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" }) }); } catch (e) {}
+        }
+
+        // ★ 新增：儲存平均成本
+        async function saveAvgCost(symbol, newCost) {
+            try { await fetch(API_URL + "?action=updateAvgCost", { method: 'POST', body: JSON.stringify({ symbol: symbol, avgCost: newCost, action: "updateAvgCost" }) }); } catch (e) {}
         }
 
         async function addNewStock() {
@@ -329,6 +306,13 @@
             const sourceLabel = stock.isSimulated ? "Simulated" : "Real-time";
             const ma50Val = stock.ma50 ? `$${stock.ma50}` : "N/A";
 
+            // ★ 計算成本顏色 ★
+            let costColor = '#ddd'; // 預設灰色
+            if (stock.avgCost && stock.price) {
+                if (Number(stock.avgCost) > Number(stock.price)) costColor = '#00e676'; // 成本高於現價 -> 賠錢 (綠色)
+                else if (Number(stock.avgCost) < Number(stock.price)) costColor = '#ff1744'; // 成本低於現價 -> 賺錢 (紅色)
+            }
+
             const cardHTML = `
                 <div class="stock-card" data-symbol="${stock.symbol}">
                     <span class="close-btn" onclick="deleteStock('${stock.symbol}')">&times;</span>
@@ -341,6 +325,12 @@
                             <div class="prev-close">Prev: ${Number(stock.prev).toFixed(2)}</div>
                             <div class="shares-wrapper">
                                 <input type="number" class="shares-input" placeholder="0" value="${stock.shares || ''}" onblur="saveShares('${stock.symbol}', this.value)">
+                            </div>
+                            <div class="shares-wrapper">
+                                <input type="number" class="shares-input" placeholder="0" 
+                                       value="${stock.avgCost || ''}" 
+                                       style="color: ${costColor};"
+                                       onblur="saveAvgCost('${stock.symbol}', this.value)">
                             </div>
                         </div>
                     </div>
@@ -382,11 +372,8 @@
             const chartLabels = stock.chartLabels || [];
             const prevPrice = Number(stock.prev);
             const prevLineData = new Array(chartLabels.length).fill(prevPrice);
-            
-            // ★★★ 新增：MA50 線數據 (整條水平線) ★★★
             const ma50LineData = stock.ma50 ? new Array(chartLabels.length).fill(Number(stock.ma50)) : [];
 
-            // 計算 Y 軸範圍 (包含 MA50)
             const allValues = [...chartData, prevPrice];
             if(stock.ma50) allValues.push(Number(stock.ma50));
             
@@ -398,35 +385,9 @@
                 data: {
                     labels: chartLabels,
                     datasets: [
-                        { 
-                            label: 'Price',
-                            data: chartData, 
-                            borderColor: lineColor, 
-                            backgroundColor: gradient, 
-                            borderWidth: 1.5, 
-                            pointRadius: 0, 
-                            fill: true, 
-                            tension: 0.3 
-                        }, 
-                        { 
-                            label: 'Prev',
-                            data: prevLineData, 
-                            borderColor: '#666', 
-                            borderWidth: 1, 
-                            borderDash: [5, 3], 
-                            pointRadius: 0, 
-                            fill: false 
-                        },
-                        // ★★★ MA50 Dataset ★★★
-                        {
-                            label: 'MA50',
-                            data: ma50LineData,
-                            borderColor: '#FFD700', // 金黃色
-                            borderWidth: 1,
-                            borderDash: [2, 2], // 點狀虛線
-                            pointRadius: 0,
-                            fill: false
-                        }
+                        { label: 'Price', data: chartData, borderColor: lineColor, backgroundColor: gradient, borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }, 
+                        { label: 'Prev', data: prevLineData, borderColor: '#666', borderWidth: 1, borderDash: [5, 3], pointRadius: 0, fill: false },
+                        { label: 'MA50', data: ma50LineData, borderColor: '#FFD700', borderWidth: 1, borderDash: [2, 2], pointRadius: 0, fill: false }
                     ]
                 },
                 options: {
