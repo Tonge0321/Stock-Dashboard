@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Cost Basis)</title>
+    <title>Stocks Dashboard (Color Fix)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -37,7 +37,6 @@
         .header-right { display: flex; flex-direction: column; align-items: flex-end; }
         .prev-close { font-size: 12px; color: var(--text-sub); margin-bottom: 4px; pointer-events: none; }
         
-        /* 股數與成本輸入框 */
         .shares-wrapper { font-size: 11px; color: #666; display: flex; align-items: center; gap: 4px; margin-top: 2px; }
         .shares-input { 
             width: 50px; background: #222; border: 1px solid #333; color: #ddd; font-size: 11px; padding: 1px 4px; border-radius: 3px; text-align: right; 
@@ -91,7 +90,7 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // ★★★ 請填入您的 API URL ★★★
+        // ★★★ 請填入您的 API URL (確保是 /exec 結尾) ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
@@ -145,6 +144,7 @@
             else statusText.innerText = "(Updating...)";
             
             try {
+                // 1. 取得基本清單
                 const response = await fetch(API_URL + "?action=read");
                 const cloudData = await response.json();
                 
@@ -153,6 +153,7 @@
                     grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
+                // 2. 並行抓取 Yahoo 真實數據
                 const renderPromises = cloudData.map(async (item) => {
                     const chartDataPromise = fetchYahooChartFrontend(item.symbol);
                     const ma50Promise = fetchMA50Frontend(item.symbol);
@@ -269,7 +270,6 @@
             try { await fetch(API_URL + "?action=updateShares", { method: 'POST', body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" }) }); } catch (e) {}
         }
 
-        // ★ 新增：儲存平均成本
         async function saveAvgCost(symbol, newCost) {
             try { await fetch(API_URL + "?action=updateAvgCost", { method: 'POST', body: JSON.stringify({ symbol: symbol, avgCost: newCost, action: "updateAvgCost" }) }); } catch (e) {}
         }
@@ -306,11 +306,13 @@
             const sourceLabel = stock.isSimulated ? "Simulated" : "Real-time";
             const ma50Val = stock.ma50 ? `$${stock.ma50}` : "N/A";
 
-            // ★ 計算成本顏色 ★
-            let costColor = '#ddd'; // 預設灰色
+            // ★ 修正重點：成本顏色邏輯 ★
+            // 成本 > 現價 (Loss) -> 綠色 (#00e676)
+            // 成本 < 現價 (Profit) -> 紅色 (#ff1744)
+            let costColor = '#ddd'; 
             if (stock.avgCost && stock.price) {
-                if (Number(stock.avgCost) > Number(stock.price)) costColor = '#00e676'; // 成本高於現價 -> 賠錢 (綠色)
-                else if (Number(stock.avgCost) < Number(stock.price)) costColor = '#ff1744'; // 成本低於現價 -> 賺錢 (紅色)
+                if (Number(stock.avgCost) > Number(stock.price)) costColor = '#00e676'; 
+                else if (Number(stock.avgCost) < Number(stock.price)) costColor = '#ff1744'; 
             }
 
             const cardHTML = `
