@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Real-Time Force)</title>
+    <title>Stocks Dashboard (Diagnostic Mode)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -24,7 +24,9 @@
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 0 5px; }
         .title-group { display: flex; align-items: baseline; gap: 15px; }
         h1 { margin: 0; font-size: 24px; font-weight: 500; }
-        .status-text { color: #444; font-size: 14px; }
+        .status-wrapper { font-size: 14px; color: #444; font-family: monospace; }
+        .timer-text { color: #2979ff; font-weight: bold; }
+
         .btn-group { display: flex; gap: 10px; }
         button { background-color: #333; color: white; border: 1px solid #444; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
         button.primary { background-color: #2979ff; border-color: #2979ff; }
@@ -32,24 +34,32 @@
         
         .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 15px; }
         
-        .sortable-ghost { opacity: 0.4; background-color: #333 !important; border: 1px dashed #666; }
-        .sortable-drag { cursor: grabbing; }
+        .stock-card { background-color: var(--card-bg); border-radius: var(--border-radius); padding: 15px; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #222; display: flex; flex-direction: column; transition: background-color 0.5s; }
+        
+        /* 價格閃爍動畫 */
+        @keyframes flash-green { 0% { background-color: rgba(0, 230, 118, 0.2); } 100% { background-color: var(--card-bg); } }
+        @keyframes flash-red { 0% { background-color: rgba(255, 23, 68, 0.2); } 100% { background-color: var(--card-bg); } }
+        
+        .flash-up { animation: flash-green 1s; }
+        .flash-down { animation: flash-red 1s; }
 
-        .stock-card { background-color: var(--card-bg); border-radius: var(--border-radius); padding: 15px; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #222; display: flex; flex-direction: column; }
         .card-header { display: flex; justify-content: space-between; margin-bottom: 5px; cursor: grab; }
         .card-header:active { cursor: grabbing; }
 
         .symbol-info { display: flex; flex-direction: column; pointer-events: none; }
-        .symbol { font-size: 18px; font-weight: bold; color: #fff; }
+        .symbol { font-size: 18px; font-weight: bold; color: #fff; display: flex; align-items: center; gap: 8px; }
         .name { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
+        
+        /* 訊號燈樣式 */
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .dot-green { background-color: #00e676; box-shadow: 0 0 5px #00e676; } /* Live */
+        .dot-yellow { background-color: #ffb300; box-shadow: 0 0 5px #ffb300; } /* Delayed */
         
         .header-right { display: flex; flex-direction: column; align-items: flex-end; }
         .prev-close { font-size: 12px; color: var(--text-sub); margin-bottom: 4px; pointer-events: none; }
         
         .shares-wrapper { font-size: 11px; color: #666; display: flex; align-items: center; gap: 4px; margin-top: 2px; }
-        .shares-input { 
-            width: 50px; background: #222; border: 1px solid #333; color: #ddd; font-size: 11px; padding: 1px 4px; border-radius: 3px; text-align: right; 
-        }
+        .shares-input { width: 50px; background: #222; border: 1px solid #333; color: #ddd; font-size: 11px; padding: 1px 4px; border-radius: 3px; text-align: right; }
         .shares-input:focus { border-color: #555; outline: none; background: #000; }
         
         .close-btn { position: absolute; top: -10px; right: -10px; color: #444; cursor: pointer; font-size: 16px; padding: 5px; z-index: 10; }
@@ -65,13 +75,9 @@
         .ma50-label { background: #333; color: #FFD700; padding: 1px 3px; border-radius: 2px; font-size: 10px; margin-right: 4px; border: 1px solid #554400; }
         
         .chart-container { position: relative; height: 120px; width: 100%; margin-bottom: 10px; }
-        
         .note-section { border-top: 1px solid #2a2a2a; padding-top: 8px; margin-top: auto; }
         
-        .note-input {
-            width: 100%; background: transparent; border: none; color: #ccc; font-size: 12px; font-family: 'Segoe UI', sans-serif; outline: none; padding: 4px 0; transition: 0.3s;
-            resize: none; height: 62px; line-height: 1.5; overflow-y: auto; word-wrap: break-word;
-        }
+        .note-input { width: 100%; background: transparent; border: none; color: #ccc; font-size: 12px; font-family: 'Segoe UI', sans-serif; outline: none; padding: 4px 0; transition: 0.3s; resize: none; height: 62px; line-height: 1.5; overflow-y: auto; word-wrap: break-word; }
         .note-input::placeholder { color: #444; font-style: italic; }
         .note-input:focus { color: #fff; background: #222; padding-left: 5px; border-radius: 4px; }
         .note-input::-webkit-scrollbar { width: 4px; }
@@ -88,10 +94,13 @@
     <div class="header">
         <div class="title-group">
             <h1>Stocks Tracking</h1>
-            <span class="status-text" id="statusText">(Initializing...)</span>
+            <div class="status-wrapper">
+                <span id="timerText" class="timer-text">Next update: 15s</span>
+                <span id="statusText" style="margin-left: 10px;">(Initializing...)</span>
+            </div>
         </div>
         <div class="btn-group">
-            <button onclick="fetchStockData()">&#8635; Refresh</button>
+            <button onclick="manualRefresh()">&#8635; Refresh</button>
             <button class="primary" onclick="addNewStock()">+ Add Stock</button>
         </div>
     </div>
@@ -99,12 +108,18 @@
     <div class="dashboard-grid" id="stockGrid"></div>
 
     <script>
-        // ★★★ 請確認這裡的 URL 是您最新的部署網址 (以 /exec 結尾) ★★★
+        // ★★★ 請填入您的 API URL ★★★
         const API_URL = "https://script.google.com/macros/s/AKfycbxVeKfGwbX_5csv5lOlvUvngOHp-ied90amf2ut1M6yVxIwBI1aI94EnD6cxxMxpdBCag/exec";
 
         const grid = document.getElementById('stockGrid');
         const loading = document.getElementById('loading');
         const statusText = document.getElementById('statusText');
+        const timerText = document.getElementById('timerText');
+
+        const UPDATE_INTERVAL = 15;
+        let countdown = UPDATE_INTERVAL;
+        let timerInterval;
+        let previousPrices = {}; // 用來記錄舊價格以比對變動
 
         function generateMockLabels() {
             const labels = [];
@@ -124,8 +139,26 @@
         window.onload = function() { 
             fetchStockData(); 
             initSortable();
-            setInterval(fetchStockData, 60000); 
+            startTimer(); 
         };
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            countdown = UPDATE_INTERVAL;
+            updateTimerDisplay();
+            
+            timerInterval = setInterval(() => {
+                countdown--;
+                updateTimerDisplay();
+                if (countdown <= 0) {
+                    fetchStockData();
+                    countdown = UPDATE_INTERVAL;
+                }
+            }, 1000);
+        }
+
+        function updateTimerDisplay() { timerText.innerText = `Next update: ${countdown}s`; }
+        function manualRefresh() { fetchStockData(); startTimer(); }
 
         function initSortable() {
             new Sortable(grid, {
@@ -153,35 +186,30 @@
             else statusText.innerText = "(Updating...)";
             
             try {
-                // 1. 取得基本清單 (從 Google Sheet)
                 const response = await fetch(API_URL + "?action=read");
                 const cloudData = await response.json();
                 
-                grid.innerHTML = '';
-                if(cloudData.length === 0) {
-                    grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
+                if(grid.childElementCount === 0) {
+                    grid.innerHTML = '';
+                    if(cloudData.length === 0) grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
-                // 2. 並行抓取 Yahoo 真實數據
                 const renderPromises = cloudData.map(async (item) => {
                     const chartDataPromise = fetchYahooChartFrontend(item.symbol);
                     const ma50Promise = fetchMA50Frontend(item.symbol);
                     const [chartData, ma50Val] = await Promise.all([chartDataPromise, ma50Promise]);
                     
                     if (chartData.success) {
-                        // 強制使用 Yahoo 的即時數據覆蓋
                         item.price = chartData.price; 
                         item.prev = chartData.prev;
                         item.change = item.price - item.prev;
                         item.pct = (item.change / item.prev) * 100;
-
                         item.chartData = chartData.data;
                         item.chartLabels = chartData.labels;
-                        item.isSimulated = false;
+                        item.isSimulated = false; // 綠燈
                     } else {
-                        // 如果 Yahoo 失敗，才使用備用數據 (這時才會看到舊價格)
                         item = addMockChartData(item);
-                        item.isError = true; // 標記為資料源異常
+                        item.isSimulated = true; // 黃燈
                     }
                     item.ma50 = ma50Val;
                     return item;
@@ -205,15 +233,14 @@
 
         async function fetchYahooChartFrontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            
-            // ★★★ 關鍵修改：加入亂數時間戳記 (nocache) 強制刷新 ★★★
+            // ★ 強力亂數，確保不快取 ★
             const timestamp = new Date().getTime();
-            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m&nocache=${timestamp}`;
+            const random = Math.random();
+            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m&_=${timestamp}${random}`;
 
             try {
                 const res = await fetch(url);
                 const json = await res.json();
-                
                 if (!json.chart || !json.chart.result || json.chart.result.length === 0) return { success: false };
 
                 const result = json.chart.result[0];
@@ -228,35 +255,21 @@
                 for (let i = 0; i < timestampArr.length; i++) {
                     if (quote.close[i] != null) {
                         data.push(Number(quote.close[i].toFixed(2)));
-                        
                         const date = new Date(timestampArr[i] * 1000);
                         const nyTime = date.toLocaleTimeString('en-US', {
-                            timeZone: 'America/New_York',
-                            hour: '2-digit', minute: '2-digit', hour12: false
+                            timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false
                         });
                         labels.push(nyTime);
                     }
                 }
-
-                return { 
-                    success: true, 
-                    data: data, 
-                    labels: labels,
-                    price: meta.regularMarketPrice, // 這是即時價
-                    prev: meta.chartPreviousClose 
-                };
-
-            } catch (e) {
-                console.warn("Proxy Fetch Failed for", symbol);
-                return { success: false };
-            }
+                return { success: true, data: data, labels: labels, price: meta.regularMarketPrice, prev: meta.chartPreviousClose };
+            } catch (e) { return { success: false }; }
         }
 
         async function fetchMA50Frontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            // 加入亂數防止快取
             const timestamp = new Date().getTime();
-            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d&nocache=${timestamp}`;
+            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d&_=${timestamp}`;
             try {
                 const res = await fetch(url);
                 const json = await res.json();
@@ -275,10 +288,8 @@
         function addMockChartData(stock) {
             let price = parseFloat(stock.price);
             let prev = parseFloat(stock.prev);
-            
             if (isNaN(price) || price === 0) price = prev || 100; 
             if (isNaN(prev) || prev === 0) prev = price;
-
             let mockData = [];
             let tempPrice = prev; 
             for(let i=0; i < MOCK_LABELS.length - 1; i++) {
@@ -286,55 +297,38 @@
                 mockData.push(tempPrice);
             }
             mockData.push(price);
-
-            return {
-                ...stock,
-                chartData: mockData, chartLabels: MOCK_LABELS, isSimulated: true
-            };
+            return { ...stock, chartData: mockData, chartLabels: MOCK_LABELS, isSimulated: true };
         }
 
-        async function saveNote(symbol, newNote) {
-            try { await fetch(API_URL + "?action=updateNote", { method: 'POST', body: JSON.stringify({ symbol: symbol, note: newNote, action: "updateNote" }) }); } catch (e) {}
-        }
-
-        async function saveShares(symbol, newShares) {
-            try { await fetch(API_URL + "?action=updateShares", { method: 'POST', body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" }) }); } catch (e) {}
-        }
-
-        async function saveAvgCost(symbol, newCost) {
-            try { await fetch(API_URL + "?action=updateAvgCost", { method: 'POST', body: JSON.stringify({ symbol: symbol, avgCost: newCost, action: "updateAvgCost" }) }); } catch (e) {}
-        }
-
-        async function addNewStock() {
-            const symbol = prompt("輸入股票代碼 (例如 2330 或 NVDA)：");
-            if (symbol) {
-                loading.style.display = 'flex';
-                try {
-                    const res = await fetch(API_URL + "?action=addStock", { method: 'POST', body: JSON.stringify({ symbol: symbol.toUpperCase().trim(), action: "addStock" }) });
-                    const result = await res.text();
-                    if(result === "Exists") alert("已在清單中");
-                    else setTimeout(fetchStockData, 1500);
-                } catch (e) { alert("新增失敗"); }
-                loading.style.display = 'none';
-            }
-        }
-
-        async function deleteStock(symbol) {
-            if(confirm(`刪除 ${symbol} ?`)) {
-                loading.style.display = 'flex';
-                try { await fetch(API_URL + "?action=deleteStock", { method: 'POST', body: JSON.stringify({ symbol: symbol, action: "deleteStock" }) }); fetchStockData(); } 
-                catch (e) { alert("刪除失敗"); loading.style.display = 'none'; }
-            }
-        }
+        // 輔助函式...
+        async function saveNote(symbol, newNote) { try { await fetch(API_URL + "?action=updateNote", { method: 'POST', body: JSON.stringify({ symbol: symbol, note: newNote, action: "updateNote" }) }); } catch (e) {} }
+        async function saveShares(symbol, newShares) { try { await fetch(API_URL + "?action=updateShares", { method: 'POST', body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" }) }); } catch (e) {} }
+        async function saveAvgCost(symbol, newCost) { try { await fetch(API_URL + "?action=updateAvgCost", { method: 'POST', body: JSON.stringify({ symbol: symbol, avgCost: newCost, action: "updateAvgCost" }) }); } catch (e) {} }
+        async function addNewStock() { const s = prompt("輸入代碼："); if(s){ loading.style.display='flex'; try{ await fetch(API_URL+"?action=addStock",{method:'POST',body:JSON.stringify({symbol:s.toUpperCase().trim(),action:"addStock"})}); setTimeout(fetchStockData,1500); }catch(e){} loading.style.display='none'; } }
+        async function deleteStock(s) { if(confirm("刪除?")){ loading.style.display='flex'; try{ await fetch(API_URL+"?action=deleteStock",{method:'POST',body:JSON.stringify({symbol:s,action:"deleteStock"})}); fetchStockData(); }catch(e){} loading.style.display='none'; } }
 
         function renderCard(stock, index) {
+            // 檢查是否需要更新卡片 (避免重繪導致輸入框失焦)
+            const existingCard = document.querySelector(`.stock-card[data-symbol="${stock.symbol}"]`);
+            
+            // 偵測價格變動以觸發動畫
+            let flashClass = "";
+            const currentPrice = Number(stock.price);
+            if (previousPrices[stock.symbol] !== undefined) {
+                if (currentPrice > previousPrices[stock.symbol]) flashClass = "flash-up";
+                else if (currentPrice < previousPrices[stock.symbol]) flashClass = "flash-down";
+            }
+            previousPrices[stock.symbol] = currentPrice;
+
             const colorClass = (stock.change >= 0) ? 'text-up' : 'text-down';
             const sign = (stock.change >= 0) ? '+' : '';
-            const priceVal = Number(stock.price).toFixed(2);
+            const priceVal = currentPrice.toFixed(2);
             const changeVal = Number(stock.change).toFixed(2);
             const pctVal = Number(stock.pct).toFixed(2);
             const displaySymbol = stock.symbol.replace('TPE:', '');
-            const sourceLabel = stock.isSimulated ? "Delayed (Google)" : "Real-time"; // 顯示來源提示
+            
+            // 訊號燈邏輯
+            const dotClass = stock.isSimulated ? "dot-yellow" : "dot-green";
             const ma50Val = stock.ma50 ? `$${stock.ma50}` : "N/A";
 
             let costColor = '#ddd'; 
@@ -343,12 +337,38 @@
                 else if (Number(stock.avgCost) > Number(stock.price)) costColor = '#ff1744'; 
             }
 
+            // 如果卡片已存在，只更新數值部分 (防止輸入中斷)
+            if (existingCard) {
+                existingCard.className = `stock-card ${flashClass}`; // 觸發閃爍
+                existingCard.querySelector('.current-price').innerHTML = `$${priceVal}`;
+                existingCard.querySelector('.current-price').className = `current-price ${colorClass}`;
+                existingCard.querySelector('.price-change').innerHTML = `<div>${sign}${changeVal}</div><div class="pct">${sign}${pctVal}%</div>`;
+                existingCard.querySelector('.price-change').className = `price-change ${colorClass}`;
+                existingCard.querySelector('.status-dot').className = `status-dot ${dotClass}`;
+                
+                // 更新圖表
+                const chartInstance = Chart.getChart(`chart-${index}`);
+                if (chartInstance) {
+                    chartInstance.data.labels = stock.chartLabels;
+                    chartInstance.data.datasets[0].data = stock.chartData;
+                    // 更新顏色
+                    const lineColor = (stock.change >= 0) ? '#00e676' : '#ff1744';
+                    chartInstance.data.datasets[0].borderColor = lineColor;
+                    chartInstance.update('none'); // 無動畫更新
+                }
+                return;
+            }
+
+            // 如果卡片不存在，創建新卡片
             const cardHTML = `
-                <div class="stock-card" data-symbol="${stock.symbol}">
+                <div class="stock-card ${flashClass}" data-symbol="${stock.symbol}">
                     <span class="close-btn" onclick="deleteStock('${stock.symbol}')">&times;</span>
                     <div class="card-header">
                         <div class="symbol-info">
-                            <span class="symbol">${displaySymbol}</span>
+                            <span class="symbol">
+                                <span class="status-dot ${dotClass}" title="${stock.isSimulated ? 'Delayed (Sheet)' : 'Live (Yahoo)'}"></span>
+                                ${displaySymbol}
+                            </span>
                             <span class="name">${stock.name || 'Stock'}</span>
                         </div>
                         <div class="header-right">
@@ -357,10 +377,7 @@
                                 <input type="number" class="shares-input" placeholder="0" value="${stock.shares || ''}" onblur="saveShares('${stock.symbol}', this.value)">
                             </div>
                             <div class="shares-wrapper">
-                                <input type="number" class="shares-input" placeholder="0" 
-                                       value="${stock.avgCost || ''}" 
-                                       style="color: ${costColor};"
-                                       onblur="saveAvgCost('${stock.symbol}', this.value)">
+                                <input type="number" class="shares-input" placeholder="0" value="${stock.avgCost || ''}" style="color: ${costColor};" onblur="saveAvgCost('${stock.symbol}', this.value)">
                             </div>
                         </div>
                     </div>
@@ -374,7 +391,7 @@
                     </div>
 
                     <div class="meta-data">
-                        <div><span class="fut-label">FUT</span> ${sourceLabel} <span class="ma50-label">MA50: ${ma50Val}</span></div>
+                        <div><span class="fut-label">FUT</span> <span class="ma50-label">MA50: ${ma50Val}</span></div>
                         <div>L:${Number(stock.low).toFixed(2)} H:${Number(stock.high).toFixed(2)}</div>
                     </div>
 
@@ -394,13 +411,8 @@
 
             const ctx = document.getElementById(`chart-${index}`).getContext('2d');
             const lineColor = (stock.change >= 0) ? '#00e676' : '#ff1744';
-            
             const gradient = ctx.createLinearGradient(0, 0, 0, 120);
-            if (stock.change >= 0) {
-                gradient.addColorStop(0, 'rgba(0, 230, 118, 0.15)'); 
-            } else {
-                gradient.addColorStop(0, 'rgba(255, 23, 68, 0.15)'); 
-            }
+            gradient.addColorStop(0, (stock.change >= 0) ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 23, 68, 0.15)');
             gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
             const chartData = stock.chartData || [];
@@ -408,10 +420,8 @@
             const prevPrice = Number(stock.prev);
             const prevLineData = new Array(chartLabels.length).fill(prevPrice);
             const ma50LineData = stock.ma50 ? new Array(chartLabels.length).fill(Number(stock.ma50)) : [];
-
             const allValues = [...chartData, prevPrice];
             if(stock.ma50) allValues.push(Number(stock.ma50));
-            
             const minPrice = Math.min(...allValues) * 0.995;
             const maxPrice = Math.max(...allValues) * 1.005;
 
