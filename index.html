@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Diagnostic Mode)</title>
+    <title>Stocks Dashboard (Proxy Fix)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -36,7 +36,6 @@
         
         .stock-card { background-color: var(--card-bg); border-radius: var(--border-radius); padding: 15px; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #222; display: flex; flex-direction: column; transition: background-color 0.5s; }
         
-        /* 價格閃爍動畫 */
         @keyframes flash-green { 0% { background-color: rgba(0, 230, 118, 0.2); } 100% { background-color: var(--card-bg); } }
         @keyframes flash-red { 0% { background-color: rgba(255, 23, 68, 0.2); } 100% { background-color: var(--card-bg); } }
         
@@ -95,7 +94,7 @@
         <div class="title-group">
             <h1>Stocks Tracking</h1>
             <div class="status-wrapper">
-                <span id="timerText" class="timer-text">Next update: 15s</span>
+                <span id="timerText" class="timer-text">Next update: 60s</span>
                 <span id="statusText" style="margin-left: 10px;">(Initializing...)</span>
             </div>
         </div>
@@ -116,10 +115,10 @@
         const statusText = document.getElementById('statusText');
         const timerText = document.getElementById('timerText');
 
-        const UPDATE_INTERVAL = 120;
+        const UPDATE_INTERVAL = 60;
         let countdown = UPDATE_INTERVAL;
         let timerInterval;
-        let previousPrices = {}; // 用來記錄舊價格以比對變動
+        let previousPrices = {}; 
 
         function generateMockLabels() {
             const labels = [];
@@ -206,10 +205,10 @@
                         item.pct = (item.change / item.prev) * 100;
                         item.chartData = chartData.data;
                         item.chartLabels = chartData.labels;
-                        item.isSimulated = false; // 綠燈
+                        item.isSimulated = false; // 成功連線 -> 綠燈
                     } else {
                         item = addMockChartData(item);
-                        item.isSimulated = true; // 黃燈
+                        item.isSimulated = true; // 失敗連線 -> 黃燈
                     }
                     item.ma50 = ma50Val;
                     return item;
@@ -231,12 +230,14 @@
             }
         }
 
+        // ★★★ 關鍵修改：更換代理服務器 (AllOrigins) ★★★
         async function fetchYahooChartFrontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            // ★ 強力亂數，確保不快取 ★
+            
+            // 使用 allorigins.win 作為替代方案，避開 corsproxy.io 的封鎖
             const timestamp = new Date().getTime();
-            const random = Math.random();
-            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m&_=${timestamp}${random}`;
+            const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m&nocache=${timestamp}`;
+            const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
 
             try {
                 const res = await fetch(url);
@@ -263,13 +264,18 @@
                     }
                 }
                 return { success: true, data: data, labels: labels, price: meta.regularMarketPrice, prev: meta.chartPreviousClose };
-            } catch (e) { return { success: false }; }
+            } catch (e) { 
+                console.warn("Proxy Fetch Failed", e);
+                return { success: false }; 
+            }
         }
 
         async function fetchMA50Frontend(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
             const timestamp = new Date().getTime();
-            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d&_=${timestamp}`;
+            const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d&nocache=${timestamp}`;
+            const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+            
             try {
                 const res = await fetch(url);
                 const json = await res.json();
@@ -300,7 +306,6 @@
             return { ...stock, chartData: mockData, chartLabels: MOCK_LABELS, isSimulated: true };
         }
 
-        // 輔助函式...
         async function saveNote(symbol, newNote) { try { await fetch(API_URL + "?action=updateNote", { method: 'POST', body: JSON.stringify({ symbol: symbol, note: newNote, action: "updateNote" }) }); } catch (e) {} }
         async function saveShares(symbol, newShares) { try { await fetch(API_URL + "?action=updateShares", { method: 'POST', body: JSON.stringify({ symbol: symbol, shares: newShares, action: "updateShares" }) }); } catch (e) {} }
         async function saveAvgCost(symbol, newCost) { try { await fetch(API_URL + "?action=updateAvgCost", { method: 'POST', body: JSON.stringify({ symbol: symbol, avgCost: newCost, action: "updateAvgCost" }) }); } catch (e) {} }
@@ -308,10 +313,8 @@
         async function deleteStock(s) { if(confirm("刪除?")){ loading.style.display='flex'; try{ await fetch(API_URL+"?action=deleteStock",{method:'POST',body:JSON.stringify({symbol:s,action:"deleteStock"})}); fetchStockData(); }catch(e){} loading.style.display='none'; } }
 
         function renderCard(stock, index) {
-            // 檢查是否需要更新卡片 (避免重繪導致輸入框失焦)
             const existingCard = document.querySelector(`.stock-card[data-symbol="${stock.symbol}"]`);
             
-            // 偵測價格變動以觸發動畫
             let flashClass = "";
             const currentPrice = Number(stock.price);
             if (previousPrices[stock.symbol] !== undefined) {
@@ -327,7 +330,6 @@
             const pctVal = Number(stock.pct).toFixed(2);
             const displaySymbol = stock.symbol.replace('TPE:', '');
             
-            // 訊號燈邏輯
             const dotClass = stock.isSimulated ? "dot-yellow" : "dot-green";
             const ma50Val = stock.ma50 ? `$${stock.ma50}` : "N/A";
 
@@ -337,29 +339,25 @@
                 else if (Number(stock.avgCost) > Number(stock.price)) costColor = '#ff1744'; 
             }
 
-            // 如果卡片已存在，只更新數值部分 (防止輸入中斷)
             if (existingCard) {
-                existingCard.className = `stock-card ${flashClass}`; // 觸發閃爍
+                existingCard.className = `stock-card ${flashClass}`;
                 existingCard.querySelector('.current-price').innerHTML = `$${priceVal}`;
                 existingCard.querySelector('.current-price').className = `current-price ${colorClass}`;
                 existingCard.querySelector('.price-change').innerHTML = `<div>${sign}${changeVal}</div><div class="pct">${sign}${pctVal}%</div>`;
                 existingCard.querySelector('.price-change').className = `price-change ${colorClass}`;
                 existingCard.querySelector('.status-dot').className = `status-dot ${dotClass}`;
                 
-                // 更新圖表
                 const chartInstance = Chart.getChart(`chart-${index}`);
                 if (chartInstance) {
                     chartInstance.data.labels = stock.chartLabels;
                     chartInstance.data.datasets[0].data = stock.chartData;
-                    // 更新顏色
                     const lineColor = (stock.change >= 0) ? '#00e676' : '#ff1744';
                     chartInstance.data.datasets[0].borderColor = lineColor;
-                    chartInstance.update('none'); // 無動畫更新
+                    chartInstance.update('none'); 
                 }
                 return;
             }
 
-            // 如果卡片不存在，創建新卡片
             const cardHTML = `
                 <div class="stock-card ${flashClass}" data-symbol="${stock.symbol}">
                     <span class="close-btn" onclick="deleteStock('${stock.symbol}')">&times;</span>
