@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Dual-Proxy)</title>
+    <title>Stocks Dashboard (Queue System)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -179,6 +179,7 @@
             } catch (e) { console.error(e); statusText.innerText = "(Save Failed)"; }
         }
 
+        // ★★★ 核心修改：排隊抓取 (Sequential Fetch) ★★★
         async function fetchStockData() {
             if(grid.childElementCount === 0) loading.style.display = 'flex';
             else statusText.innerText = "(Updating...)";
@@ -192,9 +193,16 @@
                     if(cloudData.length === 0) grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
                 }
 
-                const renderPromises = cloudData.map(async (item) => {
-                    // ★ 雙重備援機制 ★
+                // 建立空陣列來存處理後的資料
+                let finalStocks = new Array(cloudData.length);
+
+                // ★ 改用 for 迴圈，每檔股票間隔 200ms，防止被 Proxy 封鎖 ★
+                for (let i = 0; i < cloudData.length; i++) {
+                    const item = cloudData[i];
+                    
+                    // 1. 抓取圖表
                     const chartData = await fetchYahooWithFailover(item.symbol);
+                    // 2. 抓取 MA50
                     const ma50Val = await fetchMA50WithFailover(item.symbol);
                     
                     if (chartData.success) {
@@ -204,20 +212,19 @@
                         item.pct = (item.change / item.prev) * 100;
                         item.chartData = chartData.data;
                         item.chartLabels = chartData.labels;
-                        item.isSimulated = false; // 綠燈 (真即時)
+                        item.isSimulated = false; // 綠燈
                     } else {
                         item = addMockChartData(item);
-                        item.isSimulated = true; // 黃燈 (備用)
+                        item.isSimulated = true; // 黃燈
                     }
                     item.ma50 = ma50Val;
-                    return item;
-                });
+                    
+                    // 渲染單張卡片 (這樣看起來會像瀑布一樣一張張更新)
+                    renderCard(item, i);
 
-                const finalStocks = await Promise.all(renderPromises);
-
-                finalStocks.forEach((item, index) => {
-                    renderCard(item, index);
-                });
+                    // ★ 暫停 200 毫秒，禮讓伺服器 ★
+                    await new Promise(r => setTimeout(r, 200)); 
+                }
 
                 statusText.innerText = "(Synced: " + new Date().toLocaleTimeString() + ")";
 
@@ -229,19 +236,15 @@
             }
         }
 
-        // ★★★ 核心：雙通道備援抓取系統 ★★★
         async function fetchYahooWithFailover(symbol) {
-            // 通道 1: corsproxy.io (通常較快)
             const result1 = await fetchYahooChart_ProxyA(symbol);
             if (result1.success) return result1;
-
-            // 如果通道 1 失敗，自動切換通道 2: allorigins.win (較穩定)
-            console.warn(`Primary proxy failed for ${symbol}, switching to backup...`);
+            // 失敗時等待一下再試備援
+            await new Promise(r => setTimeout(r, 300));
             const result2 = await fetchYahooChart_ProxyB(symbol);
-            return result2; // 如果也失敗，就會回傳 false，讓系統變黃燈
+            return result2; 
         }
 
-        // 通道 1: CorsProxy.io
         async function fetchYahooChart_ProxyA(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
             const timestamp = new Date().getTime();
@@ -254,7 +257,6 @@
             } catch (e) { return { success: false }; }
         }
 
-        // 通道 2: AllOrigins
         async function fetchYahooChart_ProxyB(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
             const timestamp = new Date().getTime();
@@ -268,7 +270,6 @@
             } catch (e) { return { success: false }; }
         }
 
-        // 統一解析函式
         function parseYahooJson(json) {
             if (!json.chart || !json.chart.result || json.chart.result.length === 0) return { success: false };
             const result = json.chart.result[0];
@@ -292,10 +293,10 @@
             return { success: true, data: data, labels: labels, price: meta.regularMarketPrice, prev: meta.chartPreviousClose };
         }
 
-        // MA50 也做雙備援
         async function fetchMA50WithFailover(symbol) {
             const v1 = await fetchMA50_A(symbol);
             if(v1) return v1;
+            await new Promise(r => setTimeout(r, 300));
             return await fetchMA50_B(symbol);
         }
 
