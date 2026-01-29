@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Proxy Fix)</title>
+    <title>Stocks Dashboard (Dual-Proxy)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -49,10 +49,9 @@
         .symbol { font-size: 18px; font-weight: bold; color: #fff; display: flex; align-items: center; gap: 8px; }
         .name { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
         
-        /* 訊號燈樣式 */
         .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-        .dot-green { background-color: #00e676; box-shadow: 0 0 5px #00e676; } /* Live */
-        .dot-yellow { background-color: #ffb300; box-shadow: 0 0 5px #ffb300; } /* Delayed */
+        .dot-green { background-color: #00e676; box-shadow: 0 0 5px #00e676; }
+        .dot-yellow { background-color: #ffb300; box-shadow: 0 0 5px #ffb300; }
         
         .header-right { display: flex; flex-direction: column; align-items: flex-end; }
         .prev-close { font-size: 12px; color: var(--text-sub); margin-bottom: 4px; pointer-events: none; }
@@ -194,9 +193,9 @@
                 }
 
                 const renderPromises = cloudData.map(async (item) => {
-                    const chartDataPromise = fetchYahooChartFrontend(item.symbol);
-                    const ma50Promise = fetchMA50Frontend(item.symbol);
-                    const [chartData, ma50Val] = await Promise.all([chartDataPromise, ma50Promise]);
+                    // ★ 雙重備援機制 ★
+                    const chartData = await fetchYahooWithFailover(item.symbol);
+                    const ma50Val = await fetchMA50WithFailover(item.symbol);
                     
                     if (chartData.success) {
                         item.price = chartData.price; 
@@ -205,10 +204,10 @@
                         item.pct = (item.change / item.prev) * 100;
                         item.chartData = chartData.data;
                         item.chartLabels = chartData.labels;
-                        item.isSimulated = false; // 成功連線 -> 綠燈
+                        item.isSimulated = false; // 綠燈 (真即時)
                     } else {
                         item = addMockChartData(item);
-                        item.isSimulated = true; // 失敗連線 -> 黃燈
+                        item.isSimulated = true; // 黃燈 (備用)
                     }
                     item.ma50 = ma50Val;
                     return item;
@@ -230,65 +229,107 @@
             }
         }
 
-        // ★★★ 關鍵修改：更換代理服務器 (AllOrigins) ★★★
-        async function fetchYahooChartFrontend(symbol) {
+        // ★★★ 核心：雙通道備援抓取系統 ★★★
+        async function fetchYahooWithFailover(symbol) {
+            // 通道 1: corsproxy.io (通常較快)
+            const result1 = await fetchYahooChart_ProxyA(symbol);
+            if (result1.success) return result1;
+
+            // 如果通道 1 失敗，自動切換通道 2: allorigins.win (較穩定)
+            console.warn(`Primary proxy failed for ${symbol}, switching to backup...`);
+            const result2 = await fetchYahooChart_ProxyB(symbol);
+            return result2; // 如果也失敗，就會回傳 false，讓系統變黃燈
+        }
+
+        // 通道 1: CorsProxy.io
+        async function fetchYahooChart_ProxyA(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            
-            // 使用 allorigins.win 作為替代方案，避開 corsproxy.io 的封鎖
+            const timestamp = new Date().getTime();
+            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m&nocache=${timestamp}`;
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error("Network response was not ok");
+                const json = await res.json();
+                return parseYahooJson(json);
+            } catch (e) { return { success: false }; }
+        }
+
+        // 通道 2: AllOrigins
+        async function fetchYahooChart_ProxyB(symbol) {
+            let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
             const timestamp = new Date().getTime();
             const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1d&interval=5m&nocache=${timestamp}`;
             const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-
             try {
                 const res = await fetch(url);
+                if (!res.ok) throw new Error("Network response was not ok");
                 const json = await res.json();
-                if (!json.chart || !json.chart.result || json.chart.result.length === 0) return { success: false };
-
-                const result = json.chart.result[0];
-                const meta = result.meta;
-                const timestampArr = result.timestamp;
-                const quote = result.indicators.quote[0];
-
-                if (!timestampArr || !quote.close) return { success: false };
-
-                const data = [];
-                const labels = [];
-                for (let i = 0; i < timestampArr.length; i++) {
-                    if (quote.close[i] != null) {
-                        data.push(Number(quote.close[i].toFixed(2)));
-                        const date = new Date(timestampArr[i] * 1000);
-                        const nyTime = date.toLocaleTimeString('en-US', {
-                            timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false
-                        });
-                        labels.push(nyTime);
-                    }
-                }
-                return { success: true, data: data, labels: labels, price: meta.regularMarketPrice, prev: meta.chartPreviousClose };
-            } catch (e) { 
-                console.warn("Proxy Fetch Failed", e);
-                return { success: false }; 
-            }
+                return parseYahooJson(json);
+            } catch (e) { return { success: false }; }
         }
 
-        async function fetchMA50Frontend(symbol) {
+        // 統一解析函式
+        function parseYahooJson(json) {
+            if (!json.chart || !json.chart.result || json.chart.result.length === 0) return { success: false };
+            const result = json.chart.result[0];
+            const meta = result.meta;
+            const timestampArr = result.timestamp;
+            const quote = result.indicators.quote[0];
+            if (!timestampArr || !quote.close) return { success: false };
+
+            const data = [];
+            const labels = [];
+            for (let i = 0; i < timestampArr.length; i++) {
+                if (quote.close[i] != null) {
+                    data.push(Number(quote.close[i].toFixed(2)));
+                    const date = new Date(timestampArr[i] * 1000);
+                    const nyTime = date.toLocaleTimeString('en-US', {
+                        timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false
+                    });
+                    labels.push(nyTime);
+                }
+            }
+            return { success: true, data: data, labels: labels, price: meta.regularMarketPrice, prev: meta.chartPreviousClose };
+        }
+
+        // MA50 也做雙備援
+        async function fetchMA50WithFailover(symbol) {
+            const v1 = await fetchMA50_A(symbol);
+            if(v1) return v1;
+            return await fetchMA50_B(symbol);
+        }
+
+        async function fetchMA50_A(symbol) {
             let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
-            const timestamp = new Date().getTime();
-            const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d&nocache=${timestamp}`;
-            const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-            
+            const url = `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d`;
             try {
                 const res = await fetch(url);
                 const json = await res.json();
-                if (!json.chart || !json.chart.result) return null;
-                const quotes = json.chart.result[0].indicators.quote[0].close;
-                if (!quotes || quotes.length < 50) return null;
-                let sum = 0, count = 0;
-                for (let i = quotes.length - 1; i >= 0; i--) {
-                    if (quotes[i] != null) { sum += quotes[i]; count++; if (count === 50) break; }
-                }
-                if (count < 50) return null;
-                return (sum / 50).toFixed(2);
+                return parseMA50(json);
             } catch (e) { return null; }
+        }
+
+        async function fetchMA50_B(symbol) {
+            let yahooSymbol = symbol.replace("TPE:", "") + (symbol.includes("TPE:") ? ".TW" : "");
+            const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=3mo&interval=1d`;
+            const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+            try {
+                const res = await fetch(url);
+                const json = await res.json();
+                return parseMA50(json);
+            } catch (e) { return null; }
+        }
+
+        function parseMA50(json) {
+            if (!json.chart || !json.chart.result) return null;
+            const quotes = json.chart.result[0].indicators.quote[0].close;
+            if (!quotes || quotes.length < 50) return null;
+            let sum = 0, count = 0;
+            for (let i = quotes.length - 1; i >= 0; i--) {
+                if (quotes[i] != null) { sum += quotes[i]; count++; if (count === 50) break; }
+            }
+            if (count < 50) return null;
+            return (sum / 50).toFixed(2);
         }
 
         function addMockChartData(stock) {
