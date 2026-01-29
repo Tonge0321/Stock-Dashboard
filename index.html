@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stocks Dashboard (Queue System)</title>
+    <title>Stocks Dashboard (Stable Render)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
@@ -179,50 +179,67 @@
             } catch (e) { console.error(e); statusText.innerText = "(Save Failed)"; }
         }
 
-        // ★★★ 核心修改：排隊抓取 (Sequential Fetch) ★★★
         async function fetchStockData() {
             if(grid.childElementCount === 0) loading.style.display = 'flex';
             else statusText.innerText = "(Updating...)";
             
             try {
+                // 1. 先讀取 Google Sheet 名單
                 const response = await fetch(API_URL + "?action=read");
                 const cloudData = await response.json();
                 
-                if(grid.childElementCount === 0) {
+                // ★★★ 核心修正：先畫出所有卡片 (Render First) ★★★
+                // 這樣保證所有股票都會顯示，就算之後連線失敗也不會消失
+                if(grid.childElementCount === 0 || grid.childElementCount !== cloudData.length) {
                     grid.innerHTML = '';
                     if(cloudData.length === 0) grid.innerHTML = '<div style="color:#666; padding:20px;">No stocks found.</div>';
+                    
+                    cloudData.forEach((item, index) => {
+                        // 先用備用資料畫出來 (黃燈)
+                        let mockItem = addMockChartData(item);
+                        mockItem.isSimulated = true; 
+                        renderCard(mockItem, index);
+                    });
                 }
 
-                // 建立空陣列來存處理後的資料
-                let finalStocks = new Array(cloudData.length);
-
-                // ★ 改用 for 迴圈，每檔股票間隔 200ms，防止被 Proxy 封鎖 ★
+                // 2. 背景排隊更新 (Queue Update)
+                // 這裡我們用迴圈逐一去抓最新的，抓到就更新那張卡
                 for (let i = 0; i < cloudData.length; i++) {
                     const item = cloudData[i];
                     
-                    // 1. 抓取圖表
-                    const chartData = await fetchYahooWithFailover(item.symbol);
-                    // 2. 抓取 MA50
-                    const ma50Val = await fetchMA50WithFailover(item.symbol);
-                    
-                    if (chartData.success) {
-                        item.price = chartData.price; 
-                        item.prev = chartData.prev;
-                        item.change = item.price - item.prev;
-                        item.pct = (item.change / item.prev) * 100;
-                        item.chartData = chartData.data;
-                        item.chartLabels = chartData.labels;
-                        item.isSimulated = false; // 綠燈
-                    } else {
-                        item = addMockChartData(item);
-                        item.isSimulated = true; // 黃燈
-                    }
-                    item.ma50 = ma50Val;
-                    
-                    // 渲染單張卡片 (這樣看起來會像瀑布一樣一張張更新)
-                    renderCard(item, i);
+                    try {
+                        // 更新進度文字
+                        statusText.innerText = `(Updating ${i+1}/${cloudData.length}...)`;
 
-                    // ★ 暫停 200 毫秒，禮讓伺服器 ★
+                        const chartData = await fetchYahooWithFailover(item.symbol);
+                        const ma50Val = await fetchMA50WithFailover(item.symbol);
+                        
+                        if (chartData.success) {
+                            item.price = chartData.price; 
+                            item.prev = chartData.prev;
+                            item.change = item.price - item.prev;
+                            item.pct = (item.change / item.prev) * 100;
+                            item.chartData = chartData.data;
+                            item.chartLabels = chartData.labels;
+                            item.isSimulated = false; // 變綠燈
+                        } else {
+                            // 失敗則保持原樣 (但要確保 chartData 格式正確)
+                            let mock = addMockChartData(item);
+                            item.chartData = mock.chartData;
+                            item.chartLabels = mock.chartLabels;
+                            item.isSimulated = true; // 保持黃燈
+                        }
+                        item.ma50 = ma50Val;
+                        
+                        // 重新渲染這一張卡片 (變成最新狀態)
+                        renderCard(item, i);
+
+                    } catch (err) {
+                        console.error("Single stock update failed:", item.symbol, err);
+                        // 就算這檔失敗，for 迴圈也會繼續，不會中斷
+                    }
+
+                    // 休息 200ms
                     await new Promise(r => setTimeout(r, 200)); 
                 }
 
@@ -239,7 +256,6 @@
         async function fetchYahooWithFailover(symbol) {
             const result1 = await fetchYahooChart_ProxyA(symbol);
             if (result1.success) return result1;
-            // 失敗時等待一下再試備援
             await new Promise(r => setTimeout(r, 300));
             const result2 = await fetchYahooChart_ProxyB(symbol);
             return result2; 
@@ -359,9 +375,9 @@
             
             let flashClass = "";
             const currentPrice = Number(stock.price);
-            if (previousPrices[stock.symbol] !== undefined) {
+            if (previousPrices[stock.symbol] !== undefined && previousPrices[stock.symbol] !== currentPrice) {
                 if (currentPrice > previousPrices[stock.symbol]) flashClass = "flash-up";
-                else if (currentPrice < previousPrices[stock.symbol]) flashClass = "flash-down";
+                else flashClass = "flash-down";
             }
             previousPrices[stock.symbol] = currentPrice;
 
@@ -381,6 +397,7 @@
                 else if (Number(stock.avgCost) > Number(stock.price)) costColor = '#ff1744'; 
             }
 
+            // 更新已存在的卡片
             if (existingCard) {
                 existingCard.className = `stock-card ${flashClass}`;
                 existingCard.querySelector('.current-price').innerHTML = `$${priceVal}`;
@@ -388,11 +405,17 @@
                 existingCard.querySelector('.price-change').innerHTML = `<div>${sign}${changeVal}</div><div class="pct">${sign}${pctVal}%</div>`;
                 existingCard.querySelector('.price-change').className = `price-change ${colorClass}`;
                 existingCard.querySelector('.status-dot').className = `status-dot ${dotClass}`;
+                // 也要更新 MA50
+                existingCard.querySelector('.ma50-label').innerText = `MA50: ${ma50Val}`;
                 
                 const chartInstance = Chart.getChart(`chart-${index}`);
                 if (chartInstance) {
                     chartInstance.data.labels = stock.chartLabels;
                     chartInstance.data.datasets[0].data = stock.chartData;
+                    // 更新 MA50 線
+                    const ma50Data = stock.ma50 ? new Array(stock.chartLabels.length).fill(Number(stock.ma50)) : [];
+                    chartInstance.data.datasets[2].data = ma50Data;
+                    
                     const lineColor = (stock.change >= 0) ? '#00e676' : '#ff1744';
                     chartInstance.data.datasets[0].borderColor = lineColor;
                     chartInstance.update('none'); 
@@ -400,6 +423,7 @@
                 return;
             }
 
+            // 創建新卡片
             const cardHTML = `
                 <div class="stock-card ${flashClass}" data-symbol="${stock.symbol}">
                     <span class="close-btn" onclick="deleteStock('${stock.symbol}')">&times;</span>
